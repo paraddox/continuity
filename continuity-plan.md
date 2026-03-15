@@ -56,11 +56,13 @@ The thirteenth core rule is that authoritative mutation must flow through a seri
 
 The fourteenth core rule is that memory must surface epistemic status explicitly. Claims, locus resolutions, compiled views, and answers should be able to say `unknown`, `tentative`, `conflicted`, `stale`, or `needs_confirmation` instead of always collapsing to a single asserted state.
 
-The fifteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The fifteenth core rule is that memory must record downstream outcomes explicitly. Corrections, confirmations, overrides, stale-on-use events, and user acceptance should become first-class outcome records rather than only ad hoc notes or replay scores.
 
-The sixteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+The sixteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The seventeenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The seventeenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+
+The eighteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -87,6 +89,7 @@ Use a split architecture:
 - a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
 - a `Durability Contract` that defines which commit waterline each transaction and API guarantees
 - a `Mutation Arbiter` that serializes authoritative state transitions and snapshot-head publication
+- an `Outcome Ledger` that records post-hoc confirmations, corrections, overrides, and downstream usefulness
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -375,6 +378,40 @@ This is the missing judgment layer:
 - prompt packing can prioritize high-confidence state and exclude risky fragments
 - answers can be more trustworthy without being artificially overconfident
 - replay can evaluate not only recall quality but calibration quality
+
+### Outcome Ledger
+
+Continuity should record what later turned out to happen, not just what it believed at the time.
+
+The system should be able to store outcome labels such as:
+- `confirmed`
+- `corrected`
+- `contradicted`
+- `stale_on_use`
+- `helpful`
+- `harmful`
+- `needs_followup`
+- `user_accepted`
+- `user_overrode`
+
+Outcome records should be attachable to:
+- claims
+- locus resolutions
+- compiled views such as `prompt_view` or `answer_view`
+- turn artifacts and replay runs
+
+The outcome ledger should capture:
+- what artifact or decision the outcome refers to
+- who or what supplied the outcome signal
+- when the outcome was observed
+- whether the signal is direct user feedback, inferred downstream behavior, or explicit correction
+- how the outcome should feed replay scoring and future policy tuning
+
+This is the missing learning substrate:
+- replay can be judged against real downstream outcomes instead of only ex ante heuristics
+- policy tuning can optimize for usefulness and correctness over time
+- epistemic calibration can be evaluated against later confirmation or override
+- memory quality becomes a closed loop instead of just a replayable one
 
 ### Evidence Graph
 
@@ -679,6 +716,7 @@ It should not own the session / peer / claim domain model.
 - Evidence-backed, subject-scoped, locus-addressed claims, with provenance, supersession, correction, and validity tracking
 - Explicit current-belief management with freshness and contradiction handling
 - Explicit epistemic status on claims, resolutions, compiled views, and answers
+- Explicit post-hoc outcome labels on claims, views, and decisions
 - Token-budget-aware prompt planning with inspectable packing decisions
 - Turn-level decision capture and offline replay for retrieval, belief, and reasoning evaluation
 - Type-aware memory classification, policy enforcement, and prompt rendering
@@ -710,6 +748,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/arbiter.py`
 - `src/continuity/views.py`
 - `src/continuity/epistemics.py`
+- `src/continuity/outcomes.py`
 - `src/continuity/prompt_planner.py`
 - `src/continuity/snapshots.py`
 - `src/continuity/tiers.py`
@@ -759,6 +798,7 @@ It should not own the session / peer / claim domain model.
 - Define the durability contract and commit waterlines.
 - Define the mutation arbiter and commit-lane invariants.
 - Define the epistemic-status layer and abstention rules.
+- Define the outcome ledger and outcome-label semantics.
 - Define the budgeted prompt planner and packing invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
@@ -991,7 +1031,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.15: Define snapshot consistency invariants
+### Task 1.15: Define outcome ledger
+- **Location**: `src/continuity/outcomes.py`, `docs/architecture.md`, `tests/test_outcomes_model.py`
+- **Description**: Define the downstream outcome model:
+  - which outcome labels exist in v1
+  - which artifacts and decisions can receive outcome annotations
+  - which outcome signals come from user feedback, explicit corrections, or inferred downstream use
+  - how outcome records attach to replay and policy evaluation
+  - how outcome labels differ from epistemic status
+- **Dependencies**: Tasks 1.6, 1.12, and 1.14
+- **Acceptance Criteria**:
+  - The system can record what later happened, not just what it believed.
+  - Replay and policy evaluation can consume explicit downstream outcomes.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.16: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -999,14 +1054,14 @@ It should not own the session / peer / claim domain model.
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, and 1.14
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, and 1.15
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.16: Define generational tiering invariants
+### Task 1.17: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -1014,14 +1069,14 @@ It should not own the session / peer / claim domain model.
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, and 1.15
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, and 1.16
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.17: Define budgeted prompt planner
+### Task 1.18: Define budgeted prompt planner
 - **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
 - **Description**: Define the bounded prompt packing model for `prompt_view`:
   - which fragment classes can compete for prompt space
@@ -1077,6 +1132,7 @@ It should not own the session / peer / claim domain model.
   - turn_artifacts
   - replay_runs
   - policy_versions
+  - outcome_records
   - compiled_views
   - artifact_dependencies
   - artifact_versions
@@ -1101,6 +1157,7 @@ It should not own the session / peer / claim domain model.
   - Derived claims can be traced to source observations and derivation runs.
   - Active beliefs can be derived, superseded, and inspected independently of raw evidence.
   - Replayable turn artifacts can be stored and loaded independently of retrieval engine internals.
+  - Outcome records can be attached to claims, views, and decisions explicitly.
   - Memory records can be typed and queried by ontology class.
   - Claim validity, subject, locus, scope, and relation metadata are explicit and queryable.
   - Beliefs, derivation runs, and turn artifacts can be traced to a concrete policy version.
@@ -1195,7 +1252,20 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Repository round-trip tests.
 
-### Task 2.7: Implement compiler state repository
+### Task 2.7: Implement outcome ledger repository
+- **Location**: `src/continuity/outcomes.py`, `tests/test_outcomes_store.py`
+- **Description**: Persist and query post-hoc outcome records:
+  - record confirmations, corrections, overrides, and downstream usefulness labels
+  - attach outcomes to claims, compiled views, and turn artifacts
+  - query outcomes for replay and policy evaluation
+- **Dependencies**: Tasks 2.2, 2.5, and 2.6
+- **Acceptance Criteria**:
+  - Outcome records are durable, queryable, and attributable.
+  - Replay and policy code can consume outcome records without scraping ad hoc notes.
+- **Validation**:
+  - Repository round-trip tests.
+
+### Task 2.8: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
   - register dependencies between source inputs, subjects, claims, loci, and compiled views
@@ -1211,7 +1281,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and selective-invalidation tests.
 
-### Task 2.8: Implement snapshot repository
+### Task 2.9: Implement snapshot repository
 - **Location**: `src/continuity/snapshots.py`, `tests/test_snapshots_store.py`
 - **Description**: Persist and query snapshot state:
   - create immutable snapshots
@@ -1225,7 +1295,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip, promotion, and diff tests.
 
-### Task 2.9: Implement tier state repository
+### Task 2.10: Implement tier state repository
 - **Location**: `src/continuity/tiers.py`, `tests/test_tiers_store.py`
 - **Description**: Persist and query tiering state:
   - assign initial artifact tiers
@@ -1239,7 +1309,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and tier-transition tests.
 
-### Task 2.10: Implement session manager on SQLite
+### Task 2.11: Implement session manager on SQLite
 - **Location**: `src/continuity/session_manager.py`, `tests/test_session_manager.py`
 - **Description**: Implement:
   - peer/session creation
@@ -1401,6 +1471,7 @@ It should not own the session / peer / claim domain model.
   - Capture records the transaction kind and relevant phase boundary.
   - Capture records the durability waterline reached before the host saw completion.
   - Capture records prompt packing decisions for `prompt_view` when applicable.
+  - Capture can be linked to later outcome records.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
   - Turn artifacts and replay records are eligible for archival tiers by policy.
@@ -1514,6 +1585,8 @@ It should not own the session / peer / claim domain model.
   - resolve subject
   - inspect evidence for a claim or answer
   - inspect epistemic status
+  - record outcome
+  - inspect outcomes
   - inspect turn decision record
   - inspect active policy pack and policy version
   - inspect compiler status and rebuild reasons
@@ -1525,6 +1598,7 @@ It should not own the session / peer / claim domain model.
   - Host mutating operations map to explicit transaction entrypoints.
   - Host mutating operations document the durability waterline they guarantee before returning.
   - Host mutating operations do not publish authoritative state except through the mutation arbiter.
+  - The API can accept and inspect explicit downstream outcome signals.
 - **Validation**:
   - End-to-end integration tests.
 
@@ -1558,6 +1632,7 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - Retrieval-only, belief-only, and end-to-end replays are supported.
   - Replay output can be scored for correctness, freshness, and token/cost impact.
+  - Replay can score against explicit downstream outcome records where available.
   - Replay can compare multiple policy versions on the same stored turns.
 - **Validation**:
   - Fixture evaluations on stored turn artifacts.
@@ -1609,6 +1684,10 @@ It should not own the session / peer / claim domain model.
   - abstention instead of assertion when evidence is insufficient
   - clarification triggers under conflicted or low-confidence state
   - calibration scoring in replay fixtures
+- Add outcome-ledger tests for:
+  - explicit `confirmed`, `corrected`, `contradicted`, `stale_on_use`, `user_accepted`, and `user_overrode` labels
+  - attachment of outcomes to claims, views, and turn artifacts
+  - user-feedback vs inferred-outcome attribution
 - Add prompt-planner tests for:
   - hard-budget adherence
   - deterministic fragment selection under equal inputs
@@ -1664,6 +1743,7 @@ It should not own the session / peer / claim domain model.
   - belief-policy counterfactual replays
   - prompt-packing counterfactual replays
   - calibration and abstention counterfactual replays
+  - outcome-anchored counterfactual replays
   - claim-set comparison on the same stored turns
   - adapter comparison on the same stored turns
 - Keep all live tests opt-in.
@@ -1680,6 +1760,7 @@ It should not own the session / peer / claim domain model.
 - Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
 - Concurrency can still corrupt authoritative state if publication is not serialized. Lock arbiter semantics early and test them under concurrent publish scenarios.
 - Overconfident memory outputs can be worse than missing memory. Make epistemic status explicit and test abstention/calibration directly.
+- Replay can become disconnected from reality if no post-hoc outcomes are recorded. Keep an explicit outcome ledger and prefer real downstream signals over purely synthetic scores.
 - Prompt packing can become opaque heuristic sludge if budget rules are not explicit. Keep planner decisions deterministic, budgeted, and inspectable.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
@@ -1709,17 +1790,18 @@ It should not own the session / peer / claim domain model.
 4. Lock the compiled view algebra before retrieval and host API behavior spread.
 5. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
 6. Lock the epistemic-status layer before retrieval, prompt packing, and answer behavior spread.
-7. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
-8. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
-9. Lock the durability contract before async behavior and host completion semantics spread.
-10. Lock the typed memory ontology before retrieval and derivation policies spread.
-11. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-12. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-13. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-14. Lock the generational tiering model before retrieval and retention defaults spread.
-15. Add Ollama embeddings and `zvec` retrieval next.
-16. Add Codex adapter after retrieval.
-17. Add turn artifact capture as part of the first end-to-end reasoning path.
-18. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-19. Add prefetch and migration after core retrieval/reasoning work.
-20. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+7. Lock the outcome ledger before replay scoring and policy tuning spread.
+8. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
+9. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
+10. Lock the durability contract before async behavior and host completion semantics spread.
+11. Lock the typed memory ontology before retrieval and derivation policies spread.
+12. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+13. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+14. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+15. Lock the generational tiering model before retrieval and retention defaults spread.
+16. Add Ollama embeddings and `zvec` retrieval next.
+17. Add Codex adapter after retrieval.
+18. Add turn artifact capture as part of the first end-to-end reasoning path.
+19. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+20. Add prefetch and migration after core retrieval/reasoning work.
+21. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
