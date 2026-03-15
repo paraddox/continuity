@@ -52,11 +52,13 @@ The eleventh core rule is that memory runtime behavior must follow explicit tran
 
 The twelfth core rule is that memory operations must have explicit durability waterlines. Each transaction and host API should declare the strongest commit point it guarantees before returning, such as `observation_committed`, `claim_committed`, `views_compiled`, `snapshot_published`, or `prefetch_warmed`.
 
-The thirteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The thirteenth core rule is that authoritative mutation must flow through a serialized arbiter. Concurrent ingest, conclusion writes, imports, rebuild publication, and snapshot-head changes should not race directly; they should publish through a single ordered commit lane.
 
-The fourteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+The fourteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The fifteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The fifteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+
+The sixteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -81,6 +83,7 @@ Use a split architecture:
 - an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to compiled views
 - a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
 - a `Durability Contract` that defines which commit waterline each transaction and API guarantees
+- a `Mutation Arbiter` that serializes authoritative state transitions and snapshot-head publication
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -309,6 +312,35 @@ This gives the runtime contract real precision:
 - host integrations know exactly what is durable when an API returns
 - replay can compare not only outcomes but commit boundaries
 - async behavior stops being ambiguous
+
+### Mutation Arbiter
+
+Continuity should make authoritative mutation serialization explicit.
+
+Not all work needs to happen on the serialized lane:
+- embedding generation
+- claim derivation
+- view compilation
+- prefetch preparation
+
+But all authoritative publication should flow back through one arbiter:
+- subject/claim/locus mutation
+- belief-state publication
+- dirty-queue transitions that change authoritative work status
+- snapshot-head promotion
+- durability-waterline completion signaling
+
+The arbiter should provide:
+- one ordered commit lane for authoritative mutations
+- stable ordering metadata for replay and debugging
+- a clear boundary between off-lane computation and on-lane publication
+- a single place to enforce snapshot-head and durability invariants
+
+This is the missing coordination layer:
+- concurrent transactions stop competing to publish authoritative state directly
+- rebuilds and foreground writes can coexist without corrupting heads or waterlines
+- replay can refer to commit-lane order rather than inferring interleavings
+- async behavior becomes operationally tractable rather than merely well-specified
 
 ### Evidence Graph
 
@@ -640,6 +672,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/policy.py`
 - `src/continuity/compiler.py`
 - `src/continuity/transactions.py`
+- `src/continuity/arbiter.py`
 - `src/continuity/views.py`
 - `src/continuity/prompt_planner.py`
 - `src/continuity/snapshots.py`
@@ -688,6 +721,7 @@ It should not own the session / peer / claim domain model.
 - Define the compiled-view algebra and its invariants.
 - Define the memory transaction pipeline and its invariants.
 - Define the durability contract and commit waterlines.
+- Define the mutation arbiter and commit-lane invariants.
 - Define the budgeted prompt planner and packing invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
@@ -890,7 +924,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.13: Define snapshot consistency invariants
+### Task 1.13: Define mutation arbiter
+- **Location**: `src/continuity/arbiter.py`, `docs/architecture.md`, `tests/test_arbiter_model.py`
+- **Description**: Define the serialized commit-lane model:
+  - which state transitions must pass through the arbiter
+  - which work may happen off-lane and publish back later
+  - how commit ordering is represented
+  - how arbiter ordering interacts with durability waterlines and snapshot promotion
+  - how replay records arbiter order for debugging and evaluation
+- **Dependencies**: Tasks 1.11 and 1.12
+- **Acceptance Criteria**:
+  - Authoritative mutation boundaries are explicit and testable.
+  - The plan distinguishes between concurrent computation and serialized publication.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.14: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -898,14 +947,14 @@ It should not own the session / peer / claim domain model.
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, and 1.12
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, and 1.13
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.14: Define generational tiering invariants
+### Task 1.15: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -913,14 +962,14 @@ It should not own the session / peer / claim domain model.
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, and 1.13
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, and 1.14
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.15: Define budgeted prompt planner
+### Task 1.16: Define budgeted prompt planner
 - **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
 - **Description**: Define the bounded prompt packing model for `prompt_view`:
   - which fragment classes can compete for prompt space
@@ -1056,7 +1105,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Transaction-flow tests for ingest, conclude, and import paths.
 
-### Task 2.5: Implement replay artifact repository
+### Task 2.5: Implement mutation arbiter
+- **Location**: `src/continuity/arbiter.py`, `tests/test_arbiter.py`
+- **Description**: Implement the serialized commit-lane runtime:
+  - accept authoritative publication requests from transaction flows
+  - serialize subject/claim/locus mutation and snapshot-head updates
+  - separate off-lane computation from on-lane publication
+  - record arbiter ordering metadata for replay/debugging
+- **Dependencies**: Tasks 2.2, 2.3, and 2.4
+- **Acceptance Criteria**:
+  - Authoritative mutation does not depend on ad hoc locking scattered across modules.
+  - Concurrent publish attempts resolve through one ordered lane.
+  - Snapshot-head and durability-waterline signaling pass through the same arbiter.
+- **Validation**:
+  - Arbiter ordering and publication tests.
+
+### Task 2.6: Implement replay artifact repository
 - **Location**: `src/continuity/store/replay.py`, `tests/test_replay_store.py`
 - **Description**: Persist canonical turn decision records and replay runs:
   - save retrieval candidates and selected evidence
@@ -1074,10 +1138,11 @@ It should not own the session / peer / claim domain model.
   - Replay runs do not mutate source-of-truth conversation memory.
   - Replay records include the policy version used for the original and replayed decisions.
   - Replay records include the transaction kind and phase boundary that produced them where applicable.
+  - Replay records include arbiter ordering metadata when publication occurred.
 - **Validation**:
   - Repository round-trip tests.
 
-### Task 2.6: Implement compiler state repository
+### Task 2.7: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
   - register dependencies between source inputs, subjects, claims, loci, and compiled views
@@ -1093,7 +1158,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and selective-invalidation tests.
 
-### Task 2.7: Implement snapshot repository
+### Task 2.8: Implement snapshot repository
 - **Location**: `src/continuity/snapshots.py`, `tests/test_snapshots_store.py`
 - **Description**: Persist and query snapshot state:
   - create immutable snapshots
@@ -1107,7 +1172,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip, promotion, and diff tests.
 
-### Task 2.8: Implement tier state repository
+### Task 2.9: Implement tier state repository
 - **Location**: `src/continuity/tiers.py`, `tests/test_tiers_store.py`
 - **Description**: Persist and query tiering state:
   - assign initial artifact tiers
@@ -1121,14 +1186,14 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and tier-transition tests.
 
-### Task 2.9: Implement session manager on SQLite
+### Task 2.10: Implement session manager on SQLite
 - **Location**: `src/continuity/session_manager.py`, `tests/test_session_manager.py`
 - **Description**: Implement:
   - peer/session creation
   - local message cache
   - transaction-trigger, write-frequency, and awaited-waterline logic
   - peer-specific memory-mode gating
-- **Dependencies**: Task 2.4
+- **Dependencies**: Tasks 2.4 and 2.5
 - **Acceptance Criteria**:
   - Session manager works without retrieval/reasoning enabled.
   - Write-frequency rules behave deterministically.
@@ -1312,6 +1377,7 @@ It should not own the session / peer / claim domain model.
   - Source edits, policy upgrades, and adapter upgrades rebuild only affected claims and compiled views.
   - Rebuild plans explain which loci were affected and why.
   - Rebuild plans are deterministic and explainable.
+  - Rebuild publication flows back through the mutation arbiter rather than mutating authoritative state directly.
   - Rebuild output can be materialized into a candidate snapshot rather than mutating the active head.
 - **Validation**:
   - Fixture tests for corrections, policy upgrades, and adapter upgrades.
@@ -1327,6 +1393,7 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - Hosts never read partially rebuilt state.
   - Candidate snapshot promotion is atomic and inspectable.
+  - Snapshot-head promotion flows through the mutation arbiter.
 - **Validation**:
   - Fixture tests for concurrent rebuild/promotion scenarios.
 
@@ -1400,6 +1467,7 @@ It should not own the session / peer / claim domain model.
   - A host runtime does not need internal store/index details and can request named compiled views explicitly.
   - Host mutating operations map to explicit transaction entrypoints.
   - Host mutating operations document the durability waterline they guarantee before returning.
+  - Host mutating operations do not publish authoritative state except through the mutation arbiter.
 - **Validation**:
   - End-to-end integration tests.
 
@@ -1505,6 +1573,11 @@ It should not own the session / peer / claim domain model.
   - `import_history` transaction boundaries
   - `publish_snapshot` transaction behavior
   - `prefetch_next_turn` transaction triggering
+- Add arbiter tests for:
+  - single ordered publication under concurrent writes
+  - off-lane computation publishing back through the arbiter
+  - snapshot-head serialization
+  - durability-waterline signaling through arbiter order
 - Add durability tests for:
   - `save_turn` waterline behavior by `writeFrequency`
   - `write_conclusion` minimum commit guarantee
@@ -1541,6 +1614,7 @@ It should not own the session / peer / claim domain model.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
 - Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
 - Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
+- Concurrency can still corrupt authoritative state if publication is not serialized. Lock arbiter semantics early and test them under concurrent publish scenarios.
 - Prompt packing can become opaque heuristic sludge if budget rules are not explicit. Keep planner decisions deterministic, budgeted, and inspectable.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
@@ -1570,15 +1644,16 @@ It should not own the session / peer / claim domain model.
 4. Lock the compiled view algebra before retrieval and host API behavior spread.
 5. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
 6. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
-7. Lock the durability contract before async behavior and host completion semantics spread.
-8. Lock the typed memory ontology before retrieval and derivation policies spread.
-9. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-10. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-11. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-12. Lock the generational tiering model before retrieval and retention defaults spread.
-13. Add Ollama embeddings and `zvec` retrieval next.
-14. Add Codex adapter after retrieval.
-15. Add turn artifact capture as part of the first end-to-end reasoning path.
-16. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-17. Add prefetch and migration after core retrieval/reasoning work.
-18. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+7. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
+8. Lock the durability contract before async behavior and host completion semantics spread.
+9. Lock the typed memory ontology before retrieval and derivation policies spread.
+10. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+11. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+12. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+13. Lock the generational tiering model before retrieval and retention defaults spread.
+14. Add Ollama embeddings and `zvec` retrieval next.
+15. Add Codex adapter after retrieval.
+16. Add turn artifact capture as part of the first end-to-end reasoning path.
+17. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+18. Add prefetch and migration after core retrieval/reasoning work.
+19. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
