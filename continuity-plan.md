@@ -50,9 +50,11 @@ The tenth core rule is that memory reads must compile to explicit view types. Ho
 
 The eleventh core rule is that memory runtime behavior must follow explicit transaction pipelines. Saving a turn, writing a conclusion, importing history, compiling views, publishing a snapshot, and prefetching next-turn context should each have deterministic phase ordering and replayable boundaries.
 
-The twelfth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The twelfth core rule is that memory operations must have explicit durability waterlines. Each transaction and host API should declare the strongest commit point it guarantees before returning, such as `observation_committed`, `claim_committed`, `views_compiled`, `snapshot_published`, or `prefetch_warmed`.
 
-The thirteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The thirteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+
+The fourteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -75,6 +77,7 @@ Use a split architecture:
 - a `Versioned Memory Policy Layer` that defines named behavior packs such as `hermes_v1`
 - an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to compiled views
 - a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
+- a `Durability Contract` that defines which commit waterline each transaction and API guarantees
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -245,6 +248,36 @@ This is the runtime spine missing from the plan:
 - replay gains canonical boundaries for what happened in each operation
 - compiler, snapshot, and prefetch subsystems stop feeling loosely coupled
 - host integration can call stable transaction entrypoints rather than assembling side effects manually
+
+### Durability Contract
+
+Continuity should make completion semantics explicit through a small set of durability waterlines.
+
+The initial waterline set should be:
+- `observation_committed`
+- `claim_committed`
+- `views_compiled`
+- `snapshot_published`
+- `prefetch_warmed`
+
+These should mean:
+- `observation_committed`: source observations and basic transaction metadata are durably stored
+- `claim_committed`: claims, subject/locus assignment, and belief-side effects for the operation are durably stored
+- `views_compiled`: all required compiled views for the operation are durably updated
+- `snapshot_published`: the host-visible snapshot head reflecting the operation is published
+- `prefetch_warmed`: optional next-turn caches are prepared
+
+Transactions and APIs should declare the strongest waterline they guarantee before returning. For example:
+- `save_turn` in async mode may guarantee only `observation_committed`
+- `write_conclusion` may require `claim_committed` or `views_compiled`
+- host-facing prompt reads should require `snapshot_published`
+- prefetch should remain best-effort and never be mistaken for the completion boundary of the mutating operation
+
+This gives the runtime contract real precision:
+- `writeFrequency` becomes about which waterline is awaited
+- host integrations know exactly what is durable when an API returns
+- replay can compare not only outcomes but commit boundaries
+- async behavior stops being ambiguous
 
 ### Evidence Graph
 
@@ -620,6 +653,7 @@ It should not own the session / peer / claim domain model.
 - Define the subject-graph, observation-log, claim-ledger, and memory-locus invariants.
 - Define the compiled-view algebra and its invariants.
 - Define the memory transaction pipeline and its invariants.
+- Define the durability contract and commit waterlines.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
 - Define typed-memory classes and policy invariants.
@@ -806,7 +840,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.12: Define snapshot consistency invariants
+### Task 1.12: Define durability contract
+- **Location**: `src/continuity/transactions.py`, `docs/architecture.md`, `tests/test_durability_model.py`
+- **Description**: Define the commit waterlines for runtime behavior:
+  - which durability waterlines exist in v1
+  - which transaction kinds can satisfy which waterlines
+  - which host APIs require which minimum waterlines before returning
+  - how `writeFrequency` maps to awaited waterlines
+  - which side effects are best-effort and excluded from the completion contract
+- **Dependencies**: Tasks 1.10 and 1.11
+- **Acceptance Criteria**:
+  - Every mutating operation has an explicit completion contract.
+  - Async behavior is described in terms of waterlines rather than vague timing language.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.13: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -814,14 +863,14 @@ It should not own the session / peer / claim domain model.
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, and 1.11
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, and 1.12
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.13: Define generational tiering invariants
+### Task 1.14: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -829,7 +878,7 @@ It should not own the session / peer / claim domain model.
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, and 1.12
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, and 1.13
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
@@ -953,6 +1002,7 @@ It should not own the session / peer / claim domain model.
   - Transaction phases are explicit and inspectable.
   - Runtime behavior does not depend on hidden orchestration in unrelated modules.
   - `writeFrequency` can be mapped onto transaction timing without redefining core behavior.
+  - Each transaction reports which durability waterline it satisfied before returning.
 - **Validation**:
   - Transaction-flow tests for ingest, conclude, and import paths.
 
@@ -1026,12 +1076,13 @@ It should not own the session / peer / claim domain model.
 - **Description**: Implement:
   - peer/session creation
   - local message cache
-  - transaction-trigger and write-frequency logic
+  - transaction-trigger, write-frequency, and awaited-waterline logic
   - peer-specific memory-mode gating
 - **Dependencies**: Task 2.4
 - **Acceptance Criteria**:
   - Session manager works without retrieval/reasoning enabled.
   - Write-frequency rules behave deterministically.
+  - The requested waterline for each save mode is explicit and testable.
 - **Validation**:
   - Unit tests covering async/turn/session/N-turn modes.
 
@@ -1173,6 +1224,7 @@ It should not own the session / peer / claim domain model.
   - Retrieval inputs, selected claims, selected beliefs, source compiled views, and reasoning envelopes are durably captured.
   - Capture is deterministic and versioned.
   - Capture records the transaction kind and relevant phase boundary.
+  - Capture records the durability waterline reached before the host saw completion.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
   - Turn artifacts and replay records are eligible for archival tiers by policy.
@@ -1249,6 +1301,7 @@ It should not own the session / peer / claim domain model.
   - Prefetch reads and caches are pinned to a specific snapshot.
   - Prefetch respects tier-aware retrieval defaults.
   - Prefetch is triggered through an explicit `prefetch_next_turn` transaction path.
+  - Prefetch remains outside the required completion waterline of mutating operations unless explicitly requested.
 - **Validation**:
   - Prefetch cache behavior tests.
 
@@ -1291,6 +1344,7 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - A host runtime does not need internal store/index details and can request named compiled views explicitly.
   - Host mutating operations map to explicit transaction entrypoints.
+  - Host mutating operations document the durability waterline they guarantee before returning.
 - **Validation**:
   - End-to-end integration tests.
 
@@ -1390,6 +1444,11 @@ It should not own the session / peer / claim domain model.
   - `import_history` transaction boundaries
   - `publish_snapshot` transaction behavior
   - `prefetch_next_turn` transaction triggering
+- Add durability tests for:
+  - `save_turn` waterline behavior by `writeFrequency`
+  - `write_conclusion` minimum commit guarantee
+  - `publish_snapshot` as the required boundary for prompt-visible reads
+  - prefetch exclusion from mutating-operation completion by default
 - Add snapshot tests for:
   - coherent reads during background rebuild
   - candidate snapshot promotion
@@ -1419,6 +1478,7 @@ It should not own the session / peer / claim domain model.
 - The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-subject, subject-to-claim, claim-to-locus, and locus-to-view edges explicit and minimal.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
 - Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
+- Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
 - Policy packs can become a dumping ground for arbitrary flags. Keep them opinionated, versioned, and tightly scoped to host-visible behavior.
@@ -1446,14 +1506,15 @@ It should not own the session / peer / claim domain model.
 3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
 4. Lock the compiled view algebra before retrieval and host API behavior spread.
 5. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
-6. Lock the typed memory ontology before retrieval and derivation policies spread.
-7. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-8. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-9. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-10. Lock the generational tiering model before retrieval and retention defaults spread.
-11. Add Ollama embeddings and `zvec` retrieval next.
-12. Add Codex adapter after retrieval.
-13. Add turn artifact capture as part of the first end-to-end reasoning path.
-14. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-15. Add prefetch and migration after core retrieval/reasoning work.
-16. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+6. Lock the durability contract before async behavior and host completion semantics spread.
+7. Lock the typed memory ontology before retrieval and derivation policies spread.
+8. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+9. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+10. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+11. Lock the generational tiering model before retrieval and retention defaults spread.
+12. Add Ollama embeddings and `zvec` retrieval next.
+13. Add Codex adapter after retrieval.
+14. Add turn artifact capture as part of the first end-to-end reasoning path.
+15. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+16. Add prefetch and migration after core retrieval/reasoning work.
+17. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
