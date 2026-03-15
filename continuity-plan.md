@@ -54,15 +54,17 @@ The twelfth core rule is that memory operations must have explicit durability wa
 
 The thirteenth core rule is that authoritative mutation must flow through a serialized arbiter. Concurrent ingest, conclusion writes, imports, rebuild publication, and snapshot-head changes should not race directly; they should publish through a single ordered commit lane.
 
-The fourteenth core rule is that memory must surface epistemic status explicitly. Claims, locus resolutions, compiled views, and answers should be able to say `unknown`, `tentative`, `conflicted`, `stale`, or `needs_confirmation` instead of always collapsing to a single asserted state.
+The fourteenth core rule is that authoritative mutation should be journaled append-only. Every published state transition should emit a durable system event so ordering, reconstruction, replay, and forensic debugging do not depend on inferred state alone.
 
-The fifteenth core rule is that memory must record downstream outcomes explicitly. Corrections, confirmations, overrides, stale-on-use events, and user acceptance should become first-class outcome records rather than only ad hoc notes or replay scores.
+The fifteenth core rule is that memory must surface epistemic status explicitly. Claims, locus resolutions, compiled views, and answers should be able to say `unknown`, `tentative`, `conflicted`, `stale`, or `needs_confirmation` instead of always collapsing to a single asserted state.
 
-The sixteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The sixteenth core rule is that memory must record downstream outcomes explicitly. Corrections, confirmations, overrides, stale-on-use events, and user acceptance should become first-class outcome records rather than only ad hoc notes or replay scores.
 
-The seventeenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+The seventeenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The eighteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The eighteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+
+The nineteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -89,6 +91,7 @@ Use a split architecture:
 - a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
 - a `Durability Contract` that defines which commit waterline each transaction and API guarantees
 - a `Mutation Arbiter` that serializes authoritative state transitions and snapshot-head publication
+- a `System Event Journal` that records authoritative published state transitions in append-only order
 - an `Outcome Ledger` that records post-hoc confirmations, corrections, overrides, and downstream usefulness
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
@@ -347,6 +350,32 @@ This is the missing coordination layer:
 - rebuilds and foreground writes can coexist without corrupting heads or waterlines
 - replay can refer to commit-lane order rather than inferring interleavings
 - async behavior becomes operationally tractable rather than merely well-specified
+
+### System Event Journal
+
+Continuity should persist authoritative publication as an append-only journal, not just as the latest table state.
+
+The journal should record event types such as:
+- `observation_ingested`
+- `claim_committed`
+- `belief_revised`
+- `view_compiled`
+- `snapshot_published`
+- `outcome_recorded`
+
+Each event should capture:
+- ordered journal position
+- event type
+- the authoritative object or objects affected
+- transaction and arbiter metadata
+- durability-waterline context where relevant
+- enough payload or references to support reconstruction and debugging
+
+This is the missing control-plane substrate:
+- replay gains a system-level event history rather than only turn-local artifacts
+- arbiter order becomes durable instead of merely observed
+- crash recovery and forensic debugging get a stable reconstruction source
+- migration and projection rebuilds can use the journal as ground truth for state transitions
 
 ### Epistemic Status Layer
 
@@ -715,6 +744,7 @@ It should not own the session / peer / claim domain model.
 - An immutable observation log and typed claim ledger as the canonical memory IR
 - Evidence-backed, subject-scoped, locus-addressed claims, with provenance, supersession, correction, and validity tracking
 - Explicit current-belief management with freshness and contradiction handling
+- Append-only system event journaling for authoritative state transitions
 - Explicit epistemic status on claims, resolutions, compiled views, and answers
 - Explicit post-hoc outcome labels on claims, views, and decisions
 - Token-budget-aware prompt planning with inspectable packing decisions
@@ -746,6 +776,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/compiler.py`
 - `src/continuity/transactions.py`
 - `src/continuity/arbiter.py`
+- `src/continuity/events.py`
 - `src/continuity/views.py`
 - `src/continuity/epistemics.py`
 - `src/continuity/outcomes.py`
@@ -797,6 +828,7 @@ It should not own the session / peer / claim domain model.
 - Define the memory transaction pipeline and its invariants.
 - Define the durability contract and commit waterlines.
 - Define the mutation arbiter and commit-lane invariants.
+- Define the system event journal and append-only event semantics.
 - Define the epistemic-status layer and abstention rules.
 - Define the outcome ledger and outcome-label semantics.
 - Define the budgeted prompt planner and packing invariants.
@@ -1091,6 +1123,21 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
+### Task 1.19: Define system event journal
+- **Location**: `src/continuity/events.py`, `docs/architecture.md`, `tests/test_event_journal_model.py`
+- **Description**: Define the append-only control-plane event model:
+  - which authoritative event types exist in v1
+  - which transitions must emit journal entries
+  - how journal ordering interacts with arbiter ordering and durability waterlines
+  - which payloads are stored inline vs by reference
+  - how replay and debugging consume journal entries
+- **Dependencies**: Tasks 1.11, 1.12, and 1.13
+- **Acceptance Criteria**:
+  - The plan can reconstruct authoritative state transitions from journal order.
+  - Event semantics are explicit enough to support replay, debugging, and rebuilds.
+- **Validation**:
+  - Invariant tests and architecture review.
+
 ## Sprint 2: Build Durable Memory Storage
 
 **Goal**: Build the SQLite-backed source-of-truth layer for subjects, peers, sessions, messages, observations, claims, loci, and the compiled views derived from them.
@@ -1101,6 +1148,7 @@ It should not own the session / peer / claim domain model.
 - Create active beliefs and belief updates from claims resolved per locus.
 - Persist compiled view metadata and view artifacts for host-facing reads.
 - Persist replayable turn artifacts without any vector layer.
+- Persist append-only system events for authoritative state transitions.
 - Execute a basic `ingest_turn` transaction end to end without retrieval.
 - Persist ontology types and policy metadata on observations, claims, and beliefs.
 - Persist policy versions on derived artifacts and turn decision records.
@@ -1132,6 +1180,7 @@ It should not own the session / peer / claim domain model.
   - turn_artifacts
   - replay_runs
   - policy_versions
+  - system_events
   - outcome_records
   - compiled_views
   - artifact_dependencies
@@ -1157,6 +1206,7 @@ It should not own the session / peer / claim domain model.
   - Derived claims can be traced to source observations and derivation runs.
   - Active beliefs can be derived, superseded, and inspected independently of raw evidence.
   - Replayable turn artifacts can be stored and loaded independently of retrieval engine internals.
+  - System event journal entries are append-only and ordered.
   - Outcome records can be attached to claims, views, and decisions explicitly.
   - Memory records can be typed and queried by ontology class.
   - Claim validity, subject, locus, scope, and relation metadata are explicit and queryable.
@@ -1227,10 +1277,25 @@ It should not own the session / peer / claim domain model.
   - Authoritative mutation does not depend on ad hoc locking scattered across modules.
   - Concurrent publish attempts resolve through one ordered lane.
   - Snapshot-head and durability-waterline signaling pass through the same arbiter.
+  - Every authoritative publish emits a corresponding system event.
 - **Validation**:
   - Arbiter ordering and publication tests.
 
-### Task 2.6: Implement replay artifact repository
+### Task 2.6: Implement system event journal
+- **Location**: `src/continuity/events.py`, `tests/test_event_journal_store.py`
+- **Description**: Persist and query append-only authoritative events:
+  - record published subject/claim/locus transitions
+  - record snapshot-head publications
+  - expose journal ordering for replay and debugging
+  - support reconstruction-oriented queries over event order
+- **Dependencies**: Tasks 2.4 and 2.5
+- **Acceptance Criteria**:
+  - System events are append-only, ordered, and attributable.
+  - Replay and debugging can consume journal order without inferring from table state alone.
+- **Validation**:
+  - Journal append and reconstruction tests.
+
+### Task 2.7: Implement replay artifact repository
 - **Location**: `src/continuity/store/replay.py`, `tests/test_replay_store.py`
 - **Description**: Persist canonical turn decision records and replay runs:
   - save retrieval candidates and selected evidence
@@ -1249,10 +1314,11 @@ It should not own the session / peer / claim domain model.
   - Replay records include the policy version used for the original and replayed decisions.
   - Replay records include the transaction kind and phase boundary that produced them where applicable.
   - Replay records include arbiter ordering metadata when publication occurred.
+  - Replay records can link back to authoritative journal positions where relevant.
 - **Validation**:
   - Repository round-trip tests.
 
-### Task 2.7: Implement outcome ledger repository
+### Task 2.8: Implement outcome ledger repository
 - **Location**: `src/continuity/outcomes.py`, `tests/test_outcomes_store.py`
 - **Description**: Persist and query post-hoc outcome records:
   - record confirmations, corrections, overrides, and downstream usefulness labels
@@ -1265,7 +1331,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Repository round-trip tests.
 
-### Task 2.8: Implement compiler state repository
+### Task 2.9: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
   - register dependencies between source inputs, subjects, claims, loci, and compiled views
@@ -1281,7 +1347,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and selective-invalidation tests.
 
-### Task 2.9: Implement snapshot repository
+### Task 2.10: Implement snapshot repository
 - **Location**: `src/continuity/snapshots.py`, `tests/test_snapshots_store.py`
 - **Description**: Persist and query snapshot state:
   - create immutable snapshots
@@ -1295,7 +1361,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip, promotion, and diff tests.
 
-### Task 2.10: Implement tier state repository
+### Task 2.11: Implement tier state repository
 - **Location**: `src/continuity/tiers.py`, `tests/test_tiers_store.py`
 - **Description**: Persist and query tiering state:
   - assign initial artifact tiers
@@ -1309,14 +1375,14 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and tier-transition tests.
 
-### Task 2.11: Implement session manager on SQLite
+### Task 2.12: Implement session manager on SQLite
 - **Location**: `src/continuity/session_manager.py`, `tests/test_session_manager.py`
 - **Description**: Implement:
   - peer/session creation
   - local message cache
   - transaction-trigger, write-frequency, and awaited-waterline logic
   - peer-specific memory-mode gating
-- **Dependencies**: Tasks 2.4 and 2.5
+- **Dependencies**: Tasks 2.4, 2.5, and 2.6
 - **Acceptance Criteria**:
   - Session manager works without retrieval/reasoning enabled.
   - Write-frequency rules behave deterministically.
@@ -1521,6 +1587,7 @@ It should not own the session / peer / claim domain model.
   - Hosts never read partially rebuilt state.
   - Candidate snapshot promotion is atomic and inspectable.
   - Snapshot-head promotion flows through the mutation arbiter.
+  - Snapshot publication is recorded in the system event journal.
 - **Validation**:
   - Fixture tests for concurrent rebuild/promotion scenarios.
 
@@ -1633,6 +1700,7 @@ It should not own the session / peer / claim domain model.
   - Retrieval-only, belief-only, and end-to-end replays are supported.
   - Replay output can be scored for correctness, freshness, and token/cost impact.
   - Replay can score against explicit downstream outcome records where available.
+  - Replay can consume authoritative journal order when event-level reconstruction matters.
   - Replay can compare multiple policy versions on the same stored turns.
 - **Validation**:
   - Fixture evaluations on stored turn artifacts.
@@ -1720,6 +1788,11 @@ It should not own the session / peer / claim domain model.
   - off-lane computation publishing back through the arbiter
   - snapshot-head serialization
   - durability-waterline signaling through arbiter order
+- Add event-journal tests for:
+  - append-only ordering
+  - linkage from arbiter publications to journal entries
+  - reconstruction of authoritative transition order
+  - replay use of journal order for debugging and evaluation
 - Add durability tests for:
   - `save_turn` waterline behavior by `writeFrequency`
   - `write_conclusion` minimum commit guarantee
@@ -1759,6 +1832,7 @@ It should not own the session / peer / claim domain model.
 - Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
 - Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
 - Concurrency can still corrupt authoritative state if publication is not serialized. Lock arbiter semantics early and test them under concurrent publish scenarios.
+- State reconstruction can stay brittle if authoritative transitions are not journaled append-only. Lock event semantics early and test them directly.
 - Overconfident memory outputs can be worse than missing memory. Make epistemic status explicit and test abstention/calibration directly.
 - Replay can become disconnected from reality if no post-hoc outcomes are recorded. Keep an explicit outcome ledger and prefer real downstream signals over purely synthetic scores.
 - Prompt packing can become opaque heuristic sludge if budget rules are not explicit. Keep planner decisions deterministic, budgeted, and inspectable.
@@ -1793,15 +1867,16 @@ It should not own the session / peer / claim domain model.
 7. Lock the outcome ledger before replay scoring and policy tuning spread.
 8. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
 9. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
-10. Lock the durability contract before async behavior and host completion semantics spread.
-11. Lock the typed memory ontology before retrieval and derivation policies spread.
-12. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-13. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-14. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-15. Lock the generational tiering model before retrieval and retention defaults spread.
-16. Add Ollama embeddings and `zvec` retrieval next.
-17. Add Codex adapter after retrieval.
-18. Add turn artifact capture as part of the first end-to-end reasoning path.
-19. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-20. Add prefetch and migration after core retrieval/reasoning work.
-21. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+10. Lock the system event journal before reconstruction, replay, and debugging semantics spread.
+11. Lock the durability contract before async behavior and host completion semantics spread.
+12. Lock the typed memory ontology before retrieval and derivation policies spread.
+13. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+14. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+15. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+16. Lock the generational tiering model before retrieval and retention defaults spread.
+17. Add Ollama embeddings and `zvec` retrieval next.
+18. Add Codex adapter after retrieval.
+19. Add turn artifact capture as part of the first end-to-end reasoning path.
+20. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+21. Add prefetch and migration after core retrieval/reasoning work.
+22. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
