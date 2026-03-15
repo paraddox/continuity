@@ -54,11 +54,13 @@ The twelfth core rule is that memory operations must have explicit durability wa
 
 The thirteenth core rule is that authoritative mutation must flow through a serialized arbiter. Concurrent ingest, conclusion writes, imports, rebuild publication, and snapshot-head changes should not race directly; they should publish through a single ordered commit lane.
 
-The fourteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The fourteenth core rule is that memory must surface epistemic status explicitly. Claims, locus resolutions, compiled views, and answers should be able to say `unknown`, `tentative`, `conflicted`, `stale`, or `needs_confirmation` instead of always collapsing to a single asserted state.
 
-The fifteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+The fifteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The sixteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The sixteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+
+The seventeenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -74,6 +76,7 @@ Use a split architecture:
 - a first-class `Memory Locus Model` that groups claims into stable addresses, conflict sets, and aggregation modes
 - a `Compiled View Algebra` that defines the host-visible read products built from claims
 - a `Budgeted Prompt Planner` that turns candidate memory fragments into bounded `prompt_view` outputs
+- an `Epistemic Status Layer` that expresses uncertainty, conflict, staleness, and abstention explicitly
 - materializers for current beliefs, profiles/cards, summaries, prompt-ready memory blocks, evidence views, and answer views
 - an `Evidence Graph` built over observations, claims, and compiled views
 - a `Temporal Belief Revision Engine` that turns claims into current beliefs
@@ -341,6 +344,37 @@ This is the missing coordination layer:
 - rebuilds and foreground writes can coexist without corrupting heads or waterlines
 - replay can refer to commit-lane order rather than inferring interleavings
 - async behavior becomes operationally tractable rather than merely well-specified
+
+### Epistemic Status Layer
+
+Continuity should make uncertainty and non-commitment first-class outputs, not just internal scores.
+
+The system should be able to represent statuses such as:
+- `unknown`
+- `tentative`
+- `conflicted`
+- `stale`
+- `needs_confirmation`
+- `asserted`
+
+These statuses should attach to:
+- claims when evidence is weak or contradictory
+- locus resolutions when no clean current state exists
+- compiled views when the output should surface ambiguity instead of flattening it
+- answers when the safest behavior is to abstain, qualify, or ask for clarification
+
+This layer should define:
+- when to abstain instead of assert
+- when to surface multiple candidates instead of choosing one
+- when low-confidence memory should be kept out of `prompt_view`
+- when the system should explicitly ask the user to confirm or correct something
+- how replay scores calibration and abstention quality, not just correctness
+
+This is the missing judgment layer:
+- belief revision can distinguish "best current guess" from "safe to rely on"
+- prompt packing can prioritize high-confidence state and exclude risky fragments
+- answers can be more trustworthy without being artificially overconfident
+- replay can evaluate not only recall quality but calibration quality
 
 ### Evidence Graph
 
@@ -644,6 +678,7 @@ It should not own the session / peer / claim domain model.
 - An immutable observation log and typed claim ledger as the canonical memory IR
 - Evidence-backed, subject-scoped, locus-addressed claims, with provenance, supersession, correction, and validity tracking
 - Explicit current-belief management with freshness and contradiction handling
+- Explicit epistemic status on claims, resolutions, compiled views, and answers
 - Token-budget-aware prompt planning with inspectable packing decisions
 - Turn-level decision capture and offline replay for retrieval, belief, and reasoning evaluation
 - Type-aware memory classification, policy enforcement, and prompt rendering
@@ -674,6 +709,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/transactions.py`
 - `src/continuity/arbiter.py`
 - `src/continuity/views.py`
+- `src/continuity/epistemics.py`
 - `src/continuity/prompt_planner.py`
 - `src/continuity/snapshots.py`
 - `src/continuity/tiers.py`
@@ -722,6 +758,7 @@ It should not own the session / peer / claim domain model.
 - Define the memory transaction pipeline and its invariants.
 - Define the durability contract and commit waterlines.
 - Define the mutation arbiter and commit-lane invariants.
+- Define the epistemic-status layer and abstention rules.
 - Define the budgeted prompt planner and packing invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
@@ -939,7 +976,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.14: Define snapshot consistency invariants
+### Task 1.14: Define epistemic-status layer
+- **Location**: `src/continuity/epistemics.py`, `docs/architecture.md`, `tests/test_epistemics_model.py`
+- **Description**: Define the uncertainty and abstention model:
+  - which epistemic statuses exist in v1
+  - which statuses can attach to claims, locus resolutions, compiled views, and answers
+  - when abstention, qualification, or clarification is required
+  - how low-confidence or conflicted state is suppressed or surfaced in `prompt_view`
+  - how replay evaluates calibration quality
+- **Dependencies**: Tasks 1.5, 1.8, 1.10, and 1.12
+- **Acceptance Criteria**:
+  - The system can express not only current state but confidence and uncertainty semantics explicitly.
+  - Abstention and clarification behavior are explicit and inspectable.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.15: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -947,14 +999,14 @@ It should not own the session / peer / claim domain model.
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, and 1.13
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, and 1.14
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.15: Define generational tiering invariants
+### Task 1.16: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -962,14 +1014,14 @@ It should not own the session / peer / claim domain model.
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, and 1.14
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, and 1.15
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.16: Define budgeted prompt planner
+### Task 1.17: Define budgeted prompt planner
 - **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
 - **Description**: Define the bounded prompt packing model for `prompt_view`:
   - which fragment classes can compete for prompt space
@@ -1082,6 +1134,7 @@ It should not own the session / peer / claim domain model.
   - Current belief state is reproducible from stored evidence.
   - Belief updates are durable and inspectable.
   - Belief promotion, decay, and supersession can vary by memory type without hidden heuristics.
+  - Belief outputs can carry explicit epistemic status when resolution is uncertain or conflicted.
   - Belief updates are attributable to a specific policy version.
 - **Validation**:
   - Unit tests for correction, contradiction, and preference-change cases.
@@ -1253,6 +1306,7 @@ It should not own the session / peer / claim domain model.
   - prompt-ready memory assembly
   - evidence-aware ranking and citation selection
   - belief-aware ranking with freshness and confidence
+  - epistemic-status-aware suppression and surfacing rules
   - locus-aware resolution for single-value, set, timeline, and state-machine memory slots
   - ontology-aware ranking and rendering by memory type
   - policy-pack-driven retrieval and prompt assembly
@@ -1268,6 +1322,7 @@ It should not own the session / peer / claim domain model.
   - Retrieval and prompt assembly can prioritize or suppress memory types based on context.
   - `prompt_view` fits within an explicit token budget.
   - Inclusion, exclusion, and degradation decisions for `prompt_view` are inspectable.
+  - Low-confidence or conflicted memory can be qualified or omitted instead of being flattened into asserted prompt state.
   - Retrieval behavior is selectable and inspectable by policy version.
   - Retrieval can pin to a specific snapshot for coherent reads.
   - Retrieval defaults prefer `hot` and relevant `warm` memory, descending into `cold` only when needed.
@@ -1332,6 +1387,7 @@ It should not own the session / peer / claim domain model.
   - Equivalent to Hermes’ `honcho_context` behavior at the user level.
   - The implementation can surface supporting evidence for “why do you think that?” style follow-ups.
   - Answers can distinguish current belief from older superseded evidence when relevant.
+  - Answers can abstain, qualify, or ask for confirmation when epistemic status requires it.
 - **Validation**:
   - Snapshot/fixture tests and local smoke tests.
 
@@ -1457,6 +1513,7 @@ It should not own the session / peer / claim domain model.
   - publish snapshot
   - resolve subject
   - inspect evidence for a claim or answer
+  - inspect epistemic status
   - inspect turn decision record
   - inspect active policy pack and policy version
   - inspect compiler status and rebuild reasons
@@ -1547,10 +1604,16 @@ It should not own the session / peer / claim domain model.
   - per-type decay and supersession rules
   - prompt rendering differences by memory class
   - partitioning of user, assistant, and ephemeral memory
+- Add epistemics tests for:
+  - explicit `unknown`, `tentative`, `conflicted`, `stale`, and `needs_confirmation` states
+  - abstention instead of assertion when evidence is insufficient
+  - clarification triggers under conflicted or low-confidence state
+  - calibration scoring in replay fixtures
 - Add prompt-planner tests for:
   - hard-budget adherence
   - deterministic fragment selection under equal inputs
   - degradation ladder behavior under budget pressure
+  - low-confidence fragment suppression under budget and policy rules
   - inclusion and exclusion reason traces
 - Add policy tests for:
   - policy-pack selection and version stamping
@@ -1600,6 +1663,7 @@ It should not own the session / peer / claim domain model.
   - retrieval-only counterfactual replays
   - belief-policy counterfactual replays
   - prompt-packing counterfactual replays
+  - calibration and abstention counterfactual replays
   - claim-set comparison on the same stored turns
   - adapter comparison on the same stored turns
 - Keep all live tests opt-in.
@@ -1615,6 +1679,7 @@ It should not own the session / peer / claim domain model.
 - Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
 - Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
 - Concurrency can still corrupt authoritative state if publication is not serialized. Lock arbiter semantics early and test them under concurrent publish scenarios.
+- Overconfident memory outputs can be worse than missing memory. Make epistemic status explicit and test abstention/calibration directly.
 - Prompt packing can become opaque heuristic sludge if budget rules are not explicit. Keep planner decisions deterministic, budgeted, and inspectable.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
@@ -1643,17 +1708,18 @@ It should not own the session / peer / claim domain model.
 3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
 4. Lock the compiled view algebra before retrieval and host API behavior spread.
 5. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
-6. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
-7. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
-8. Lock the durability contract before async behavior and host completion semantics spread.
-9. Lock the typed memory ontology before retrieval and derivation policies spread.
-10. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-11. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-12. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-13. Lock the generational tiering model before retrieval and retention defaults spread.
-14. Add Ollama embeddings and `zvec` retrieval next.
-15. Add Codex adapter after retrieval.
-16. Add turn artifact capture as part of the first end-to-end reasoning path.
-17. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-18. Add prefetch and migration after core retrieval/reasoning work.
-19. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+6. Lock the epistemic-status layer before retrieval, prompt packing, and answer behavior spread.
+7. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
+8. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
+9. Lock the durability contract before async behavior and host completion semantics spread.
+10. Lock the typed memory ontology before retrieval and derivation policies spread.
+11. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+12. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+13. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+14. Lock the generational tiering model before retrieval and retention defaults spread.
+15. Add Ollama embeddings and `zvec` retrieval next.
+16. Add Codex adapter after retrieval.
+17. Add turn artifact capture as part of the first end-to-end reasoning path.
+18. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+19. Add prefetch and migration after core retrieval/reasoning work.
+20. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
