@@ -48,9 +48,11 @@ The ninth core rule is that memory must be incrementally compilable. Continuity 
 
 The tenth core rule is that memory reads must compile to explicit view types. Hosts should consume named compiled views such as state, timeline, set, profile, prompt, evidence, and answer views rather than a generic bag of materialized artifacts.
 
-The eleventh core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The eleventh core rule is that memory runtime behavior must follow explicit transaction pipelines. Saving a turn, writing a conclusion, importing history, compiling views, publishing a snapshot, and prefetching next-turn context should each have deterministic phase ordering and replayable boundaries.
 
-The twelfth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The twelfth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+
+The thirteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -72,6 +74,7 @@ Use a split architecture:
 - a `Typed Memory Ontology` that defines memory classes and their lifecycle rules
 - a `Versioned Memory Policy Layer` that defines named behavior packs such as `hermes_v1`
 - an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to compiled views
+- a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -213,6 +216,35 @@ This gives the read side the same rigor as the write side:
 - compiler invalidation can target explicit read products
 - snapshots can define exactly which view artifacts are included
 - the host API becomes a thin layer over named view contracts
+
+### Memory Transaction Pipeline
+
+Continuity should make runtime behavior explicit through a small set of named transaction pipelines.
+
+The initial transaction set should be:
+- `ingest_turn`
+- `write_conclusion`
+- `import_history`
+- `compile_views`
+- `publish_snapshot`
+- `prefetch_next_turn`
+
+Each transaction should define deterministic phase ordering. For example:
+- normalize observations
+- resolve subjects
+- derive or accept claims
+- assign loci
+- revise beliefs
+- compile affected views
+- capture replay artifacts
+- publish a candidate or active snapshot
+- enqueue or perform prefetch when applicable
+
+This is the runtime spine missing from the plan:
+- `writeFrequency` becomes an execution policy over transaction timing rather than an ad hoc save toggle
+- replay gains canonical boundaries for what happened in each operation
+- compiler, snapshot, and prefetch subsystems stop feeling loosely coupled
+- host integration can call stable transaction entrypoints rather than assembling side effects manually
 
 ### Evidence Graph
 
@@ -541,6 +573,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/ontology.py`
 - `src/continuity/policy.py`
 - `src/continuity/compiler.py`
+- `src/continuity/transactions.py`
 - `src/continuity/views.py`
 - `src/continuity/snapshots.py`
 - `src/continuity/tiers.py`
@@ -586,6 +619,7 @@ It should not own the session / peer / claim domain model.
 - Define the core SQLite entities and the reasoning adapter interface.
 - Define the subject-graph, observation-log, claim-ledger, and memory-locus invariants.
 - Define the compiled-view algebra and its invariants.
+- Define the memory transaction pipeline and its invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
 - Define typed-memory classes and policy invariants.
@@ -756,7 +790,23 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.11: Define snapshot consistency invariants
+### Task 1.11: Define memory transaction pipeline
+- **Location**: `src/continuity/transactions.py`, `docs/architecture.md`, `tests/test_transaction_model.py`
+- **Description**: Define the runtime transaction set and phase ordering:
+  - which transaction kinds exist in v1
+  - which phases each transaction includes
+  - where replay capture boundaries sit
+  - which transactions may publish snapshots
+  - which transactions may enqueue or execute prefetch
+  - how `writeFrequency` maps to transaction timing
+- **Dependencies**: Tasks 1.4, 1.5, 1.6, 1.8, 1.9, and 1.10
+- **Acceptance Criteria**:
+  - Runtime behavior can be described in terms of named transactions with deterministic phase order.
+  - Save-turn, conclusion-write, import, compile, publish, and prefetch flows are explicit instead of implicit orchestration.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.12: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -764,14 +814,14 @@ It should not own the session / peer / claim domain model.
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, and 1.10
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, and 1.11
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.12: Define generational tiering invariants
+### Task 1.13: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -779,7 +829,7 @@ It should not own the session / peer / claim domain model.
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, and 1.11
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, and 1.12
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
@@ -796,6 +846,7 @@ It should not own the session / peer / claim domain model.
 - Create active beliefs and belief updates from claims resolved per locus.
 - Persist compiled view metadata and view artifacts for host-facing reads.
 - Persist replayable turn artifacts without any vector layer.
+- Execute a basic `ingest_turn` transaction end to end without retrieval.
 - Persist ontology types and policy metadata on observations, claims, and beliefs.
 - Persist policy versions on derived artifacts and turn decision records.
 - Persist compiler dependency metadata, fingerprints, and dirty queues.
@@ -887,7 +938,25 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Unit tests for correction, contradiction, and preference-change cases.
 
-### Task 2.4: Implement replay artifact repository
+### Task 2.4: Implement transaction runner
+- **Location**: `src/continuity/transactions.py`, `tests/test_transactions.py`
+- **Description**: Implement the runtime transaction orchestration layer:
+  - `ingest_turn`
+  - `write_conclusion`
+  - `import_history`
+  - `compile_views`
+  - `publish_snapshot`
+  - `prefetch_next_turn`
+  - enforce deterministic phase ordering and transaction boundaries
+- **Dependencies**: Tasks 2.2 and 2.3
+- **Acceptance Criteria**:
+  - Transaction phases are explicit and inspectable.
+  - Runtime behavior does not depend on hidden orchestration in unrelated modules.
+  - `writeFrequency` can be mapped onto transaction timing without redefining core behavior.
+- **Validation**:
+  - Transaction-flow tests for ingest, conclude, and import paths.
+
+### Task 2.5: Implement replay artifact repository
 - **Location**: `src/continuity/store/replay.py`, `tests/test_replay_store.py`
 - **Description**: Persist canonical turn decision records and replay runs:
   - save retrieval candidates and selected evidence
@@ -904,10 +973,11 @@ It should not own the session / peer / claim domain model.
   - Replay artifacts are versioned, queryable, and immutable after capture.
   - Replay runs do not mutate source-of-truth conversation memory.
   - Replay records include the policy version used for the original and replayed decisions.
+  - Replay records include the transaction kind and phase boundary that produced them where applicable.
 - **Validation**:
   - Repository round-trip tests.
 
-### Task 2.5: Implement compiler state repository
+### Task 2.6: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
   - register dependencies between source inputs, subjects, claims, loci, and compiled views
@@ -923,7 +993,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and selective-invalidation tests.
 
-### Task 2.6: Implement snapshot repository
+### Task 2.7: Implement snapshot repository
 - **Location**: `src/continuity/snapshots.py`, `tests/test_snapshots_store.py`
 - **Description**: Persist and query snapshot state:
   - create immutable snapshots
@@ -937,7 +1007,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip, promotion, and diff tests.
 
-### Task 2.7: Implement tier state repository
+### Task 2.8: Implement tier state repository
 - **Location**: `src/continuity/tiers.py`, `tests/test_tiers_store.py`
 - **Description**: Persist and query tiering state:
   - assign initial artifact tiers
@@ -951,14 +1021,14 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Round-trip and tier-transition tests.
 
-### Task 2.8: Implement session manager on SQLite
+### Task 2.9: Implement session manager on SQLite
 - **Location**: `src/continuity/session_manager.py`, `tests/test_session_manager.py`
 - **Description**: Implement:
   - peer/session creation
   - local message cache
-  - sync/write-frequency logic
+  - transaction-trigger and write-frequency logic
   - peer-specific memory-mode gating
-- **Dependencies**: Task 2.3
+- **Dependencies**: Task 2.4
 - **Acceptance Criteria**:
   - Session manager works without retrieval/reasoning enabled.
   - Write-frequency rules behave deterministically.
@@ -1102,6 +1172,7 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - Retrieval inputs, selected claims, selected beliefs, source compiled views, and reasoning envelopes are durably captured.
   - Capture is deterministic and versioned.
+  - Capture records the transaction kind and relevant phase boundary.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
   - Turn artifacts and replay records are eligible for archival tiers by policy.
@@ -1170,13 +1241,14 @@ It should not own the session / peer / claim domain model.
 ### Task 5.4: Implement async prefetch
 - **Location**: `src/continuity/prefetch.py`, `tests/test_prefetch.py`
 - **Description**: Cache next-turn compiled views and optional next-turn synthesis.
-- **Dependencies**: Tasks 3.3, 4.3, 5.1, 5.2, and 5.3
+- **Dependencies**: Tasks 2.4, 3.3, 4.3, 5.1, 5.2, and 5.3
 - **Acceptance Criteria**:
   - First turn may be cold.
   - Next turns avoid unnecessary blocking work.
   - Prefetch never serves stale artifacts that are marked dirty by the compiler.
   - Prefetch reads and caches are pinned to a specific snapshot.
   - Prefetch respects tier-aware retrieval defaults.
+  - Prefetch is triggered through an explicit `prefetch_next_turn` transaction path.
 - **Validation**:
   - Prefetch cache behavior tests.
 
@@ -1206,6 +1278,8 @@ It should not own the session / peer / claim domain model.
   - get prompt memory block
   - answer memory question
   - write conclusion
+  - import history
+  - publish snapshot
   - resolve subject
   - inspect evidence for a claim or answer
   - inspect turn decision record
@@ -1216,6 +1290,7 @@ It should not own the session / peer / claim domain model.
 - **Dependencies**: Tasks 5.4 and 5.5
 - **Acceptance Criteria**:
   - A host runtime does not need internal store/index details and can request named compiled views explicitly.
+  - Host mutating operations map to explicit transaction entrypoints.
 - **Validation**:
   - End-to-end integration tests.
 
@@ -1309,6 +1384,12 @@ It should not own the session / peer / claim domain model.
   - policy-upgrade rebuild planning
   - adapter-upgrade rebuild planning
   - selective rebuild of only affected claims and compiled views
+- Add transaction tests for:
+  - deterministic phase ordering for `ingest_turn`
+  - `write_conclusion` transaction boundaries
+  - `import_history` transaction boundaries
+  - `publish_snapshot` transaction behavior
+  - `prefetch_next_turn` transaction triggering
 - Add snapshot tests for:
   - coherent reads during background rebuild
   - candidate snapshot promotion
@@ -1337,6 +1418,7 @@ It should not own the session / peer / claim domain model.
 - The subject graph can over-merge distinct entities or under-merge aliases for the same entity. Lock subject-resolution semantics early and validate them with migration and replay fixtures.
 - The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-subject, subject-to-claim, claim-to-locus, and locus-to-view edges explicit and minimal.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
+- Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
 - Policy packs can become a dumping ground for arbitrary flags. Keep them opinionated, versioned, and tightly scoped to host-visible behavior.
@@ -1362,14 +1444,16 @@ It should not own the session / peer / claim domain model.
 1. Implement SQLite source-of-truth first.
 2. Lock the subject graph before claim-ledger and memory-locus semantics spread.
 3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
-4. Lock the typed memory ontology before retrieval and derivation policies spread.
-5. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-6. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-7. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-8. Lock the generational tiering model before retrieval and retention defaults spread.
-9. Add Ollama embeddings and `zvec` retrieval next.
-10. Add Codex adapter after retrieval.
-11. Add turn artifact capture as part of the first end-to-end reasoning path.
-12. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-13. Add prefetch and migration after core retrieval/reasoning work.
-14. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+4. Lock the compiled view algebra before retrieval and host API behavior spread.
+5. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
+6. Lock the typed memory ontology before retrieval and derivation policies spread.
+7. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+8. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+9. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+10. Lock the generational tiering model before retrieval and retention defaults spread.
+11. Add Ollama embeddings and `zvec` retrieval next.
+12. Add Codex adapter after retrieval.
+13. Add turn artifact capture as part of the first end-to-end reasoning path.
+14. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+15. Add prefetch and migration after core retrieval/reasoning work.
+16. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
