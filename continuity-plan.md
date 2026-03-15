@@ -54,7 +54,9 @@ The twelfth core rule is that memory operations must have explicit durability wa
 
 The thirteenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The fourteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The fourteenth core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, and inclusion/exclusion traces.
+
+The fifteenth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -69,6 +71,7 @@ Use a split architecture:
 - a typed, append-only `Claim Ledger` for provenance-linked memory assertions
 - a first-class `Memory Locus Model` that groups claims into stable addresses, conflict sets, and aggregation modes
 - a `Compiled View Algebra` that defines the host-visible read products built from claims
+- a `Budgeted Prompt Planner` that turns candidate memory fragments into bounded `prompt_view` outputs
 - materializers for current beliefs, profiles/cards, summaries, prompt-ready memory blocks, evidence views, and answer views
 - an `Evidence Graph` built over observations, claims, and compiled views
 - a `Temporal Belief Revision Engine` that turns claims into current beliefs
@@ -219,6 +222,34 @@ This gives the read side the same rigor as the write side:
 - compiler invalidation can target explicit read products
 - snapshots can define exactly which view artifacts are included
 - the host API becomes a thin layer over named view contracts
+
+### Budgeted Prompt Planner
+
+Continuity should treat `prompt_view` assembly as a bounded packing problem, not just a retrieval afterthought.
+
+The planner should work from:
+- a hard token budget and optional soft sub-budgets
+- candidate fragments from `state_view`, `profile_view`, `timeline_view`, `set_view`, and `evidence_view`
+- policy-defined fragment priorities and rendering styles
+- host context such as active peer, task type, and recall mode
+
+The planner should decide:
+- which fragments are included
+- which fragments are compressed or summarized
+- which fragments are dropped first under pressure
+- how evidence is thinned without losing critical current state
+
+The planner should expose:
+- final token estimate and actual token usage where available
+- inclusion and exclusion reasons
+- degradation ladder decisions such as "collapsed timeline" or "dropped low-priority evidence"
+- the fragment set that actually reached the model
+
+This is the missing prompt-time optimization layer:
+- `prompt_view` becomes a deterministic bounded product instead of an unbounded composition
+- replay can compare packing strategies, not just retrieval strategies
+- policy packs can change prompt economics without changing the claim model
+- Hermes compatibility can be evaluated under the same token constraints the real agent faces
 
 ### Memory Transaction Pipeline
 
@@ -411,6 +442,7 @@ Each policy pack should own:
 - per-type belief revision rules
 - retrieval and ranking profiles
 - prompt rendering rules
+- prompt budget and fragment-packing rules
 - claim derivation settings
 - migration compatibility rules where needed
 
@@ -580,6 +612,7 @@ It should not own the session / peer / claim domain model.
 - An immutable observation log and typed claim ledger as the canonical memory IR
 - Evidence-backed, subject-scoped, locus-addressed claims, with provenance, supersession, correction, and validity tracking
 - Explicit current-belief management with freshness and contradiction handling
+- Token-budget-aware prompt planning with inspectable packing decisions
 - Turn-level decision capture and offline replay for retrieval, belief, and reasoning evaluation
 - Type-aware memory classification, policy enforcement, and prompt rendering
 - Explicit policy-pack versioning for host-facing memory behavior
@@ -608,6 +641,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/compiler.py`
 - `src/continuity/transactions.py`
 - `src/continuity/views.py`
+- `src/continuity/prompt_planner.py`
 - `src/continuity/snapshots.py`
 - `src/continuity/tiers.py`
 - `src/continuity/index/zvec_index.py`
@@ -654,6 +688,7 @@ It should not own the session / peer / claim domain model.
 - Define the compiled-view algebra and its invariants.
 - Define the memory transaction pipeline and its invariants.
 - Define the durability contract and commit waterlines.
+- Define the budgeted prompt planner and packing invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
 - Define typed-memory classes and policy invariants.
@@ -784,7 +819,7 @@ It should not own the session / peer / claim domain model.
   - policy pack identity and versioning
   - which ontology and memory classes a policy enables
   - how a policy supplies subject-resolution, claim-derivation, locus-resolution, per-type revision, and retrieval rules
-  - how prompt rendering and compiled-view behavior are attached to a policy
+  - how prompt rendering, budget planning, and compiled-view behavior are attached to a policy
   - how replay compares decisions across policy versions
 - **Dependencies**: Tasks 1.5, 1.6, and 1.7
 - **Acceptance Criteria**:
@@ -882,6 +917,21 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.15: Define budgeted prompt planner
+- **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
+- **Description**: Define the bounded prompt packing model for `prompt_view`:
+  - which fragment classes can compete for prompt space
+  - which hard and soft budgets exist in v1
+  - how priority, compression, and drop order are defined
+  - how planner decisions are exposed for replay, debugging, and token-cost analysis
+  - how policy packs tune prompt economics without changing claim semantics
+- **Dependencies**: Tasks 1.8, 1.10, 1.11, and 1.12
+- **Acceptance Criteria**:
+  - Prompt assembly can be described as deterministic packing under explicit budget.
+  - Inclusion, exclusion, and degradation reasons are explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
@@ -1094,6 +1144,7 @@ It should not own the session / peer / claim domain model.
 - Generate embeddings via Ollama.
 - Index messages, observations, durable claims, and current beliefs in `zvec`.
 - Build explicit state/profile/prompt/evidence/answer view assembly paths.
+- Build a `prompt_view` under a hard token budget with deterministic degradation.
 - Retrieve relevant memory context for a query.
 - Register vector-index records as rebuildable compiled artifacts.
 - Resolve retrieval against a pinned snapshot.
@@ -1133,6 +1184,7 @@ It should not own the session / peer / claim domain model.
   - `profile_view` assembly
   - `prompt_view` assembly
   - `evidence_view` assembly
+  - budgeted prompt packing with deterministic fragment selection and degradation ladders
   - prompt-ready memory assembly
   - evidence-aware ranking and citation selection
   - belief-aware ranking with freshness and confidence
@@ -1149,6 +1201,8 @@ It should not own the session / peer / claim domain model.
   - Retrieval prefers active beliefs and well-supported current claims over stale historical claims by default.
   - Retrieval resolves each locus according to aggregation mode before prompt assembly.
   - Retrieval and prompt assembly can prioritize or suppress memory types based on context.
+  - `prompt_view` fits within an explicit token budget.
+  - Inclusion, exclusion, and degradation decisions for `prompt_view` are inspectable.
   - Retrieval behavior is selectable and inspectable by policy version.
   - Retrieval can pin to a specific snapshot for coherent reads.
   - Retrieval defaults prefer `hot` and relevant `warm` memory, descending into `cold` only when needed.
@@ -1225,6 +1279,7 @@ It should not own the session / peer / claim domain model.
   - Capture is deterministic and versioned.
   - Capture records the transaction kind and relevant phase boundary.
   - Capture records the durability waterline reached before the host saw completion.
+  - Capture records prompt packing decisions for `prompt_view` when applicable.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
   - Turn artifacts and replay records are eligible for archival tiers by policy.
@@ -1424,10 +1479,16 @@ It should not own the session / peer / claim domain model.
   - per-type decay and supersession rules
   - prompt rendering differences by memory class
   - partitioning of user, assistant, and ephemeral memory
+- Add prompt-planner tests for:
+  - hard-budget adherence
+  - deterministic fragment selection under equal inputs
+  - degradation ladder behavior under budget pressure
+  - inclusion and exclusion reason traces
 - Add policy tests for:
   - policy-pack selection and version stamping
   - policy-specific subject-resolution outcomes
   - policy-specific retrieval/rendering differences
+  - policy-specific prompt-packing outcomes
   - policy-specific belief revision outcomes
   - policy-vs-policy replay comparison on the same turn set
 - Add compiler tests for:
@@ -1465,6 +1526,7 @@ It should not own the session / peer / claim domain model.
   - locus-resolution capture on the same stored turns
   - retrieval-only counterfactual replays
   - belief-policy counterfactual replays
+  - prompt-packing counterfactual replays
   - claim-set comparison on the same stored turns
   - adapter comparison on the same stored turns
 - Keep all live tests opt-in.
@@ -1479,6 +1541,7 @@ It should not own the session / peer / claim domain model.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
 - Runtime behavior can drift if transaction ordering is implicit. Lock phase order early and test it directly.
 - Completion semantics can drift if APIs and transactions do not declare their waterlines. Lock durability contracts early and test them directly.
+- Prompt packing can become opaque heuristic sludge if budget rules are not explicit. Keep planner decisions deterministic, budgeted, and inspectable.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
 - Policy packs can become a dumping ground for arbitrary flags. Keep them opinionated, versioned, and tightly scoped to host-visible behavior.
@@ -1505,16 +1568,17 @@ It should not own the session / peer / claim domain model.
 2. Lock the subject graph before claim-ledger and memory-locus semantics spread.
 3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
 4. Lock the compiled view algebra before retrieval and host API behavior spread.
-5. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
-6. Lock the durability contract before async behavior and host completion semantics spread.
-7. Lock the typed memory ontology before retrieval and derivation policies spread.
-8. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-9. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
-10. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-11. Lock the generational tiering model before retrieval and retention defaults spread.
-12. Add Ollama embeddings and `zvec` retrieval next.
-13. Add Codex adapter after retrieval.
-14. Add turn artifact capture as part of the first end-to-end reasoning path.
-15. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-16. Add prefetch and migration after core retrieval/reasoning work.
-17. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+5. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
+6. Lock the memory transaction pipeline before async write, replay, snapshot publication, and prefetch behavior spread.
+7. Lock the durability contract before async behavior and host completion semantics spread.
+8. Lock the typed memory ontology before retrieval and derivation policies spread.
+9. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+10. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
+11. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+12. Lock the generational tiering model before retrieval and retention defaults spread.
+13. Add Ollama embeddings and `zvec` retrieval next.
+14. Add Codex adapter after retrieval.
+15. Add turn artifact capture as part of the first end-to-end reasoning path.
+16. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+17. Add prefetch and migration after core retrieval/reasoning work.
+18. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
