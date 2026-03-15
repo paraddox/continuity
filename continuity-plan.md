@@ -30,7 +30,7 @@ The project should be usable as a standalone local memory backend for Hermes and
 
 The most important architectural rule is that memory must be auditable. Every durable claim, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
 
-The second core rule is that memory must have one canonical intermediate representation. Raw observations are immutable inputs. Typed claims are the only durable derived primitive. Beliefs, profiles, summaries, prompt blocks, and vector documents are materializations over claims rather than co-equal durable roots.
+The second core rule is that memory must have one canonical intermediate representation. Raw observations are immutable inputs. Typed claims are the only durable derived primitive. Beliefs, profiles, summaries, prompt blocks, vector documents, and other host-facing outputs are compiled views over claims rather than co-equal durable roots.
 
 The third core rule is that memory must be identity-resolved. Every claim and every locus should anchor to a canonical subject, not just a raw name string. Subject merges, splits, aliases, and mistaken identity resolution must be auditable and replayable.
 
@@ -44,11 +44,13 @@ The seventh core rule is that memory must be typed. Continuity should explicitly
 
 The eighth core rule is that memory behavior must be versioned. Continuity should bundle ontology, revision, retrieval, rendering, derivation, and identity-resolution behavior into explicit policy versions that can be inspected, replayed, and evolved safely.
 
-The ninth core rule is that memory must be incrementally compilable. Continuity should treat observations, subjects, claims, loci, policy packs, and adapter behavior as inputs to a compiler that rebuilds only the affected materializations when something changes.
+The ninth core rule is that memory must be incrementally compilable. Continuity should treat observations, subjects, claims, loci, policy packs, and adapter behavior as inputs to a compiler that rebuilds only the affected compiled views when something changes.
 
-The tenth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The tenth core rule is that memory reads must compile to explicit view types. Hosts should consume named compiled views such as state, timeline, set, profile, prompt, evidence, and answer views rather than a generic bag of materialized artifacts.
 
-The eleventh core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The eleventh core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+
+The twelfth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -62,13 +64,14 @@ Use a split architecture:
 - a first-class `Subject Graph` that resolves names and references into canonical subjects
 - a typed, append-only `Claim Ledger` for provenance-linked memory assertions
 - a first-class `Memory Locus Model` that groups claims into stable addresses, conflict sets, and aggregation modes
-- materializers for current beliefs, profiles/cards, summaries, and prompt-ready memory blocks
-- an `Evidence Graph` built over observations, claims, and materializations
+- a `Compiled View Algebra` that defines the host-visible read products built from claims
+- materializers for current beliefs, profiles/cards, summaries, prompt-ready memory blocks, evidence views, and answer views
+- an `Evidence Graph` built over observations, claims, and compiled views
 - a `Temporal Belief Revision Engine` that turns claims into current beliefs
 - a `Counterfactual Replay Engine` that records and replays turn-time memory decisions
 - a `Typed Memory Ontology` that defines memory classes and their lifecycle rules
 - a `Versioned Memory Policy Layer` that defines named behavior packs such as `hermes_v1`
-- an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to materializations
+- an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to compiled views
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -85,8 +88,8 @@ This is the right fit because Hermes needs more than vectors:
 - claim_sources
 - claim_relations
 - claim derivation runs
-- belief/locus/materialization state
-- profile/card materializations
+- belief/locus/view state
+- profile/card compiled views
 - derivation runs
 - provenance links
 - claim validity windows
@@ -111,7 +114,7 @@ The model should be:
 - `observations`: immutable normalized records of what happened, what was said, or what was imported
 - `subjects`: canonical identities for users, assistants, peers, projects, repositories, files, or other addressable entities
 - `claims`: append-only, typed assertions derived from observations or explicit host writes
-- `materializations`: current beliefs, peer cards, summaries, prompt blocks, vector documents, and other host-facing projections over claims
+- `compiled views`: current beliefs, peer cards, summaries, timelines, prompt blocks, vector documents, evidence views, answer views, and other host-facing projections over claims
 
 Claims should carry the fields needed to support revision without mutating history:
 - identity and claim type
@@ -131,11 +134,11 @@ Claims should carry the fields needed to support revision without mutating histo
 
 This is the subsystem boundary that simplifies everything else:
 - belief revision becomes claim selection and projection instead of state mutation across multiple roots
-- profiles, cards, and summaries become materializations instead of special storage primitives
+- profiles, cards, summaries, prompts, and answer products become compiled views instead of special storage primitives
 - compiler invalidation works on one IR instead of bespoke domain tables
-- replay can compare claim sets and materializations directly
+- replay can compare claim sets and compiled views directly
 
-Hermes-visible operations like conclusion writes or profile reads can still exist at the API boundary, but internally they should land in the claim ledger and then flow into materializations.
+Hermes-visible operations like conclusion writes or profile reads can still exist at the API boundary, but internally they should land in the claim ledger and then flow into compiled views.
 
 ### Subject Graph
 
@@ -182,8 +185,34 @@ Each locus should define:
 This is the missing control surface for the claim ledger:
 - belief revision can resolve current state per locus instead of globally scoring all claims together
 - retrieval can ask for the best current state, a timeline, or a multi-valued set depending on locus semantics
-- compiler invalidation can target affected loci and downstream materializations precisely
+- compiler invalidation can target affected loci and downstream compiled views precisely
 - profiles and cards can materialize deterministic locus outputs instead of bespoke special cases
+
+### Compiled View Algebra
+
+Continuity should define a small, explicit algebra of host-visible compiled views instead of treating all reads as one generic materialization flow.
+
+The initial view set should be:
+- `state_view(subject, locus)` for current resolved belief state
+- `timeline_view(subject, locus)` for change history and revisions over time
+- `set_view(subject, locus)` for multi-valued loci that intentionally retain more than one active item
+- `profile_view(subject)` for peer-card or profile materialization
+- `prompt_view(session, peer, policy)` for prompt-ready memory assembly
+- `evidence_view(target)` for provenance and supporting claims behind a claim, belief, or answer
+- `answer_view(query, scope)` for dialectic answers composed from the other views
+
+Each view type should declare:
+- its inputs and dependency boundaries
+- its determinism and cacheability expectations
+- its snapshot semantics
+- its provenance surface
+- its tier inclusion defaults
+
+This gives the read side the same rigor as the write side:
+- retrieval becomes view selection plus assembly rather than an open-ended ranking pipeline
+- compiler invalidation can target explicit read products
+- snapshots can define exactly which view artifacts are included
+- the host API becomes a thin layer over named view contracts
 
 ### Evidence Graph
 
@@ -202,7 +231,7 @@ This provides three major benefits:
 - maintainability: stale claims can be invalidated or re-derived surgically
 - adapter portability: Codex-, Claude-, and OpenCode-derived claims can coexist with the same evidence model
 
-The Evidence Graph should be a first-class storage and API concern, not a debugging afterthought. It should be implemented over observations, subjects, claims, loci, and locus-to-materialization edges rather than parallel durable fact tables.
+The Evidence Graph should be a first-class storage and API concern, not a debugging afterthought. It should be implemented over observations, subjects, claims, loci, and locus-to-view edges rather than parallel durable fact tables.
 
 ### Temporal Belief Revision
 
@@ -345,12 +374,15 @@ Treat these as canonical derived IR:
 - loci
 - claim relations
 
-Treat these as compiled materializations:
-- beliefs
-- peer cards and representations
-- summaries
-- prompt memory caches
-- vector-index records
+Treat these as compiled views:
+- `state_view` artifacts
+- `timeline_view` artifacts
+- `set_view` artifacts
+- `profile_view` artifacts
+- `prompt_view` artifacts
+- `evidence_view` artifacts
+- `answer_view` artifacts
+- vector-index records built from view or claim outputs where needed
 
 The compiler should track dependency edges and fingerprints for the inputs that produced each artifact. When a source changes, the system should:
 - mark only affected artifacts dirty
@@ -371,10 +403,13 @@ The compiler should be a first-class subsystem, not an implementation detail hid
 Continuity should never answer from a half-rebuilt memory state.
 
 It should expose immutable memory snapshots, each representing one coherent read view over:
-- beliefs
-- peer cards and representations
-- summaries
-- prompt memory caches
+- `state_view` artifacts
+- `timeline_view` artifacts
+- `set_view` artifacts
+- `profile_view` artifacts
+- `prompt_view` artifacts
+- `evidence_view` artifacts
+- `answer_view` artifacts
 - vector-index records
 - any other compiled artifacts surfaced to hosts
 
@@ -506,6 +541,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/ontology.py`
 - `src/continuity/policy.py`
 - `src/continuity/compiler.py`
+- `src/continuity/views.py`
 - `src/continuity/snapshots.py`
 - `src/continuity/tiers.py`
 - `src/continuity/index/zvec_index.py`
@@ -549,6 +585,7 @@ It should not own the session / peer / claim domain model.
 - Write a compatibility table mapping Hermes Honcho features to Continuity features.
 - Define the core SQLite entities and the reasoning adapter interface.
 - Define the subject-graph, observation-log, claim-ledger, and memory-locus invariants.
+- Define the compiled-view algebra and its invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
 - Define typed-memory classes and policy invariants.
@@ -613,7 +650,7 @@ It should not own the session / peer / claim domain model.
   - claims carry `observed_at`, `learned_at`, `valid_from`, and `valid_to` where applicable
   - loci define `subject_id`, `locus_key`, `conflict_set_key`, and `aggregation_mode`
   - claim relations encode support, supersession, contradiction, and correction
-  - profile/card materializations are projections over active claims
+  - profile/card compiled views are projections over active claims
   - dialectic answers may include supporting claim and observation payloads
 - **Dependencies**: Task 1.1
 - **Acceptance Criteria**:
@@ -679,7 +716,7 @@ It should not own the session / peer / claim domain model.
   - policy pack identity and versioning
   - which ontology and memory classes a policy enables
   - how a policy supplies subject-resolution, claim-derivation, locus-resolution, per-type revision, and retrieval rules
-  - how prompt rendering and materialization behavior are attached to a policy
+  - how prompt rendering and compiled-view behavior are attached to a policy
   - how replay compares decisions across policy versions
 - **Dependencies**: Tasks 1.5, 1.6, and 1.7
 - **Acceptance Criteria**:
@@ -691,7 +728,7 @@ It should not own the session / peer / claim domain model.
 ### Task 1.9: Define incremental compiler invariants
 - **Location**: `src/continuity/compiler.py`, `docs/architecture.md`, `tests/test_compiler_model.py`
 - **Description**: Define the compiler model for derived memory artifacts:
-  - which artifacts are source inputs, canonical subjects/claims/loci, and downstream materializations
+  - which artifacts are source inputs, canonical subjects/claims/loci, and downstream compiled views
   - how dependencies and fingerprints are represented
   - how dirtying and selective rebuild work
   - how dirtying resolves to affected subjects and loci before downstream rebuild
@@ -699,35 +736,50 @@ It should not own the session / peer / claim domain model.
   - how rebuild reasons are surfaced for inspection and replay
 - **Dependencies**: Tasks 1.4, 1.6, 1.7, and 1.8
 - **Acceptance Criteria**:
-  - Source inputs, claims, and compiled materializations are explicitly separated.
+  - Source inputs, claims, and compiled views are explicitly separated.
   - Invalidation and rebuild rules are deterministic and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.10: Define snapshot consistency invariants
+### Task 1.10: Define compiled view algebra
+- **Location**: `src/continuity/views.py`, `docs/architecture.md`, `tests/test_view_model.py`
+- **Description**: Define the host-visible compiled view types:
+  - which view kinds exist in v1
+  - which claims, loci, and policies feed each view kind
+  - which view kinds are single-locus, multi-locus, subject-level, session-level, or query-level
+  - how provenance is exposed by each view kind
+  - how prompt assembly and answer generation compose over lower-level views
+- **Dependencies**: Tasks 1.4, 1.5, 1.7, 1.8, and 1.9
+- **Acceptance Criteria**:
+  - The view set is explicit, small, and host-facing.
+  - Retrieval and API behavior can be described in terms of named views instead of generic materialization flows.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.11: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
-  - how snapshots reference compiled artifacts
+  - how snapshots reference compiled view artifacts
   - how active heads and candidate branches are represented
   - how promotion, rollback, and diffing work
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, and 1.9
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, and 1.10
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.11: Define generational tiering invariants
+### Task 1.12: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
-  - which ontology types and artifacts belong in each tier by default
+  - which ontology types and compiled view artifacts belong in each tier by default
   - how policy packs govern promotion, demotion, retention, and archival
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, and 1.10
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, and 1.11
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
@@ -736,12 +788,13 @@ It should not own the session / peer / claim domain model.
 
 ## Sprint 2: Build Durable Memory Storage
 
-**Goal**: Build the SQLite-backed source-of-truth layer for subjects, peers, sessions, messages, observations, claims, loci, and the materializations derived from them.
+**Goal**: Build the SQLite-backed source-of-truth layer for subjects, peers, sessions, messages, observations, claims, loci, and the compiled views derived from them.
 
 **Demo/Validation**:
 - Create subjects, peers, sessions, and messages.
 - Create observations, loci, and provenance-linked claims.
 - Create active beliefs and belief updates from claims resolved per locus.
+- Persist compiled view metadata and view artifacts for host-facing reads.
 - Persist replayable turn artifacts without any vector layer.
 - Persist ontology types and policy metadata on observations, claims, and beliefs.
 - Persist policy versions on derived artifacts and turn decision records.
@@ -773,6 +826,7 @@ It should not own the session / peer / claim domain model.
   - turn_artifacts
   - replay_runs
   - policy_versions
+  - compiled_views
   - artifact_dependencies
   - artifact_versions
   - dirty_queue
@@ -792,6 +846,7 @@ It should not own the session / peer / claim domain model.
   - Rebuild of vector index is possible from durable state.
   - Canonical subjects and aliases are explicit and queryable.
   - Claim loci and claim membership are explicit and queryable.
+  - Compiled views are explicit, typed, and queryable.
   - Derived claims can be traced to source observations and derivation runs.
   - Active beliefs can be derived, superseded, and inspected independently of raw evidence.
   - Replayable turn artifacts can be stored and loaded independently of retrieval engine internals.
@@ -838,9 +893,10 @@ It should not own the session / peer / claim domain model.
   - save retrieval candidates and selected evidence
   - save subject-resolution decisions used for prompt assembly
   - save resolved loci used for prompt assembly
+  - save source compiled views used for prompt assembly or answers
   - save active claims used for prompt assembly
   - save active beliefs used for prompt assembly
-  - save memory block snapshots
+  - save prompt-view snapshots
   - save reasoning input/output envelopes
   - save replay comparison scores and notes
 - **Dependencies**: Tasks 2.2 and 2.3
@@ -854,7 +910,7 @@ It should not own the session / peer / claim domain model.
 ### Task 2.5: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
-  - register dependencies between source inputs, subjects, claims, loci, and compiled materializations
+  - register dependencies between source inputs, subjects, claims, loci, and compiled views
   - persist fingerprints and artifact versions
   - enqueue dirty artifacts with reason codes
   - query affected subjects before affected loci
@@ -911,11 +967,12 @@ It should not own the session / peer / claim domain model.
 
 ## Sprint 3: Add Retrieval With zvec + Ollama
 
-**Goal**: Build local semantic retrieval and belief-aware profile/context lookup over claims and their materializations.
+**Goal**: Build local semantic retrieval and typed compiled-view assembly over claims and their compiled views.
 
 **Demo/Validation**:
 - Generate embeddings via Ollama.
 - Index messages, observations, durable claims, and current beliefs in `zvec`.
+- Build explicit state/profile/prompt/evidence/answer view assembly paths.
 - Retrieve relevant memory context for a query.
 - Register vector-index records as rebuildable compiled artifacts.
 - Resolve retrieval against a pinned snapshot.
@@ -933,7 +990,7 @@ It should not own the session / peer / claim domain model.
 
 ### Task 3.2: Implement zvec indexing
 - **Location**: `src/continuity/index/zvec_index.py`, `tests/test_zvec_index.py`
-- **Description**: Index messages, observations, evidence-bearing claims, resolved locus materializations, and current beliefs into `zvec`.
+- **Description**: Index messages, observations, evidence-bearing claims, compiled views, and current beliefs into `zvec`.
 - **Dependencies**: Task 3.1
 - **Acceptance Criteria**:
   - Index entries map back to SQLite records.
@@ -951,6 +1008,10 @@ It should not own the session / peer / claim domain model.
   - peer/profile lookup
   - context retrieval with peer target/perspective
   - subject resolution from names, aliases, and imported references
+  - `state_view`, `timeline_view`, and `set_view` assembly
+  - `profile_view` assembly
+  - `prompt_view` assembly
+  - `evidence_view` assembly
   - prompt-ready memory assembly
   - evidence-aware ranking and citation selection
   - belief-aware ranking with freshness and confidence
@@ -962,6 +1023,7 @@ It should not own the session / peer / claim domain model.
   - Retrieval works from local state only.
   - Recall-mode behavior is explicit.
   - Retrieval resolves ambiguous subject references deterministically and inspectably.
+  - Each host-visible read path resolves to an explicit compiled view kind.
   - Search results and prompt memory can expose provenance when needed.
   - Retrieval prefers active beliefs and well-supported current claims over stale historical claims by default.
   - Retrieval resolves each locus according to aggregation mode before prompt assembly.
@@ -1005,7 +1067,7 @@ It should not own the session / peer / claim domain model.
 
 ### Task 4.2: Implement claim derivation pipeline
 - **Location**: `src/continuity/reasoning/*.py`, `tests/test_claim_derivation.py`
-- **Description**: Use Codex adapter to derive durable typed claims and update peer cards/representations.
+- **Description**: Use Codex adapter to derive durable typed claims and update downstream compiled views.
 - **Dependencies**: Task 4.1
 - **Acceptance Criteria**:
   - Derived claims are persisted in SQLite.
@@ -1017,14 +1079,14 @@ It should not own the session / peer / claim domain model.
   - Derived claims are assigned ontology types before entering the belief layer.
   - Derivation runs record the policy version that governed classification and promotion.
   - Derived claims register compiler dependencies on observations, policy version, and adapter version.
-  - Derived outputs can be staged into a candidate snapshot without mutating the active snapshot.
-  - Derived outputs receive an initial tier assignment appropriate to their ontology type and policy.
+  - Affected compiled views can be staged into a candidate snapshot without mutating the active snapshot.
+  - Derived outputs and affected views receive tier treatment appropriate to their ontology type and policy.
 - **Validation**:
   - End-to-end local tests with fixture conversations.
 
 ### Task 4.3: Implement dialectic-style answers
 - **Location**: `src/continuity/api.py`, `tests/test_dialectic.py`
-- **Description**: Use retrieval plus Codex adapter to answer natural-language questions about a peer.
+- **Description**: Use retrieval plus Codex adapter to produce `answer_view` results for natural-language questions about a peer.
 - **Dependencies**: Tasks 3.3 and 4.1
 - **Acceptance Criteria**:
   - Equivalent to Hermes’ `honcho_context` behavior at the user level.
@@ -1035,10 +1097,10 @@ It should not own the session / peer / claim domain model.
 
 ### Task 4.4: Capture turn decision records
 - **Location**: `src/continuity/api.py`, `tests/test_turn_artifacts.py`
-- **Description**: Record the artifacts needed for replay whenever Continuity answers a memory question or assembles a prompt memory block.
+- **Description**: Record the artifacts needed for replay whenever Continuity answers a memory question or assembles a compiled view for host use.
 - **Dependencies**: Tasks 3.3, 4.1, and 4.3
 - **Acceptance Criteria**:
-  - Retrieval inputs, selected claims, selected beliefs, prompt memory block, and reasoning envelopes are durably captured.
+  - Retrieval inputs, selected claims, selected beliefs, source compiled views, and reasoning envelopes are durably captured.
   - Capture is deterministic and versioned.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
@@ -1051,7 +1113,7 @@ It should not own the session / peer / claim domain model.
 **Goal**: Make the system practical for Hermes integration and keep derived memory fresh without broad recomputation.
 
 **Demo/Validation**:
-- Change a source observation and rebuild only affected claims and materializations.
+- Change a source observation and rebuild only affected claims and compiled views.
 - Change a policy version and produce a targeted rebuild plan.
 - Build a candidate snapshot and promote it atomically.
 - Promote and demote artifacts across tiers without breaking host-visible reads.
@@ -1065,11 +1127,11 @@ It should not own the session / peer / claim domain model.
   - detect source changes
   - compute rebuild plans from dependency metadata
   - resolve source changes into affected loci
-  - rebuild affected claims, beliefs, cards, summaries, caches, and index records
+  - rebuild affected claims, compiled views, caches, and index records
   - expose rebuild reasons for inspection and replay
 - **Dependencies**: Sprints 2, 3, and 4 complete
 - **Acceptance Criteria**:
-  - Source edits, policy upgrades, and adapter upgrades rebuild only affected claims and materializations.
+  - Source edits, policy upgrades, and adapter upgrades rebuild only affected claims and compiled views.
   - Rebuild plans explain which loci were affected and why.
   - Rebuild plans are deterministic and explainable.
   - Rebuild output can be materialized into a candidate snapshot rather than mutating the active head.
@@ -1079,7 +1141,7 @@ It should not own the session / peer / claim domain model.
 ### Task 5.2: Implement snapshot builder and promoter
 - **Location**: `src/continuity/snapshots.py`, `tests/test_snapshots_runtime.py`
 - **Description**: Build the runtime that assembles and promotes coherent read states:
-  - materialize compiled artifacts into candidate snapshots
+  - materialize compiled view artifacts into candidate snapshots
   - atomically promote candidate snapshots to active heads
   - diff snapshots
   - expose branchable snapshots for replay and policy experiments
@@ -1094,7 +1156,7 @@ It should not own the session / peer / claim domain model.
 - **Location**: `src/continuity/tiers.py`, `tests/test_tiers_runtime.py`
 - **Description**: Build the runtime that manages memory economics over time:
   - assign initial tiers from ontology and policy
-  - promote and demote artifacts across tiers
+  - promote and demote compiled views across tiers
   - bound `hot` and `warm` working sets
   - archive long-tail and replay-heavy artifacts into colder tiers
   - expose tier-aware retention decisions for inspection
@@ -1107,7 +1169,7 @@ It should not own the session / peer / claim domain model.
 
 ### Task 5.4: Implement async prefetch
 - **Location**: `src/continuity/prefetch.py`, `tests/test_prefetch.py`
-- **Description**: Cache next-turn context and optional next-turn synthesis.
+- **Description**: Cache next-turn compiled views and optional next-turn synthesis.
 - **Dependencies**: Tasks 3.3, 4.3, 5.1, 5.2, and 5.3
 - **Acceptance Criteria**:
   - First turn may be cold.
@@ -1138,6 +1200,8 @@ It should not own the session / peer / claim domain model.
   - initialize
   - save turn
   - search
+  - get state view
+  - get timeline view
   - get profile
   - get prompt memory block
   - answer memory question
@@ -1151,7 +1215,7 @@ It should not own the session / peer / claim domain model.
   - inspect tier assignments and retention status
 - **Dependencies**: Tasks 5.4 and 5.5
 - **Acceptance Criteria**:
-  - A host runtime does not need internal store/index details.
+  - A host runtime does not need internal store/index details and can request named compiled views explicitly.
 - **Validation**:
   - End-to-end integration tests.
 
@@ -1244,7 +1308,7 @@ It should not own the session / peer / claim domain model.
   - locus-scoped invalidation
   - policy-upgrade rebuild planning
   - adapter-upgrade rebuild planning
-  - selective rebuild of only affected claims and materializations
+  - selective rebuild of only affected claims and compiled views
 - Add snapshot tests for:
   - coherent reads during background rebuild
   - candidate snapshot promotion
@@ -1271,7 +1335,7 @@ It should not own the session / peer / claim domain model.
 - The claim ledger can sprawl if claim granularity is vague. Keep claim boundaries explicit and Hermes-driven.
 - The locus model can either collapse distinct memories together or fragment one memory into too many slots. Lock locus-address semantics early and validate them with fixtures.
 - The subject graph can over-merge distinct entities or under-merge aliases for the same entity. Lock subject-resolution semantics early and validate them with migration and replay fixtures.
-- The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-subject, subject-to-claim, claim-to-locus, and locus-to-materialization edges explicit and minimal.
+- The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-subject, subject-to-claim, claim-to-locus, and locus-to-view edges explicit and minimal.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
 - Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
@@ -1297,10 +1361,10 @@ It should not own the session / peer / claim domain model.
 
 1. Implement SQLite source-of-truth first.
 2. Lock the subject graph before claim-ledger and memory-locus semantics spread.
-3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and materializations spread.
+3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
 4. Lock the typed memory ontology before retrieval and derivation policies spread.
 5. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-6. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream materializations spread across the system.
+6. Lock the compiler dependency model after subject and locus resolution rules are explicit and before downstream compiled views spread across the system.
 7. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
 8. Lock the generational tiering model before retrieval and retention defaults spread.
 9. Add Ollama embeddings and `zvec` retrieval next.
