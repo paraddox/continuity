@@ -28,21 +28,23 @@ The implementation target is not "clone Honcho internally." It is:
 
 The project should be usable as a standalone local memory backend for Hermes and later adaptable to other agent runtimes.
 
-The most important architectural rule is that memory must be auditable. Every derived fact, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
+The most important architectural rule is that memory must be auditable. Every durable claim, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
 
-The second core rule is that memory must be revisable over time. Continuity should optimize for current belief state, not just historical accumulation.
+The second core rule is that memory must have one canonical intermediate representation. Raw observations are immutable inputs. Typed claims are the only durable derived primitive. Beliefs, profiles, summaries, prompt blocks, and vector documents are materializations over claims rather than co-equal durable roots.
 
-The third core rule is that memory decisions must be replayable. Continuity should preserve enough turn-time artifacts to re-run retrieval, belief selection, and reasoning later under alternate strategies.
+The third core rule is that memory must be revisable over time. Continuity should optimize for current belief state, not just historical accumulation.
 
-The fourth core rule is that memory must be typed. Continuity should explicitly model what kind of memory each observation, fact, and belief represents so revision, retrieval, and rendering rules are type-aware rather than generic.
+The fourth core rule is that memory decisions must be replayable. Continuity should preserve enough turn-time artifacts to re-run retrieval, claim selection, belief selection, and reasoning later under alternate strategies.
 
-The fifth core rule is that memory behavior must be versioned. Continuity should bundle ontology, revision, retrieval, rendering, and derivation behavior into explicit policy versions that can be inspected, replayed, and evolved safely.
+The fifth core rule is that memory must be typed. Continuity should explicitly model what kind of memory each observation and claim represents so revision, retrieval, and rendering rules are type-aware rather than generic.
 
-The sixth core rule is that memory must be incrementally compilable. Continuity should treat observations, policy packs, and adapter behavior as inputs to a compiler that rebuilds only the affected derived artifacts when something changes.
+The sixth core rule is that memory behavior must be versioned. Continuity should bundle ontology, revision, retrieval, rendering, and derivation behavior into explicit policy versions that can be inspected, replayed, and evolved safely.
 
-The seventh core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The seventh core rule is that memory must be incrementally compilable. Continuity should treat observations, claims, policy packs, and adapter behavior as inputs to a compiler that rebuilds only the affected materializations when something changes.
 
-The eighth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The eighth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+
+The ninth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -52,12 +54,15 @@ Use a split architecture:
 - relational state in `SQLite`
 - semantic retrieval in `zvec`
 - reasoning in a pluggable SDK adapter
-- an `Evidence Graph` that links raw observations to all derived memory artifacts
-- a `Temporal Belief Revision Engine` that turns evidence into current beliefs
+- an immutable `Observation Log` for normalized source messages and imports
+- a typed, append-only `Claim Ledger` for provenance-linked memory assertions
+- materializers for current beliefs, profiles/cards, summaries, and prompt-ready memory blocks
+- an `Evidence Graph` built over observations, claims, and materializations
+- a `Temporal Belief Revision Engine` that turns claims into current beliefs
 - a `Counterfactual Replay Engine` that records and replays turn-time memory decisions
 - a `Typed Memory Ontology` that defines memory classes and their lifecycle rules
 - a `Versioned Memory Policy Layer` that defines named behavior packs such as `hermes_v1`
-- an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds
+- an `Incremental Memory Compiler` that tracks dependencies, invalidation, and selective rebuilds from observations to claims to materializations
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
 
@@ -66,13 +71,16 @@ This is the right fit because Hermes needs more than vectors:
 - sessions
 - messages
 - observations
-- conclusions
-- beliefs
-- belief_updates
+- claims
+- claim_sources
+- claim_relations
+- claim derivation runs
+- belief/materialization state
 - profile/card materializations
 - derivation runs
 - provenance links
-- conflict/supersession metadata
+- claim validity windows
+- conflict/supersession/correction metadata
 - migration metadata
 - artifact dependency metadata
 - compilation state and dirty queues
@@ -85,45 +93,74 @@ These belong in `SQLite`.
 
 `zvec` should be treated as the retrieval index, not the canonical store. If the index becomes stale, it should be rebuildable from SQLite.
 
+### Canonical Memory IR
+
+Continuity should have one native memory object: the typed claim.
+
+The model should be:
+- `observations`: immutable normalized records of what happened, what was said, or what was imported
+- `claims`: append-only, typed assertions derived from observations or explicit host writes
+- `materializations`: current beliefs, peer cards, summaries, prompt blocks, vector documents, and other host-facing projections over claims
+
+Claims should carry the fields needed to support revision without mutating history:
+- identity and claim type
+- scope (`user`, `assistant`, `peer`, `session`, `shared`)
+- provenance links to source observations and derivation runs
+- confidence / support metadata
+- contradiction, supersession, and correction edges
+- `observed_at`
+- `learned_at`
+- `valid_from`
+- `valid_to`
+
+This is the subsystem boundary that simplifies everything else:
+- belief revision becomes claim selection and projection instead of state mutation across multiple roots
+- profiles, cards, and summaries become materializations instead of special storage primitives
+- compiler invalidation works on one IR instead of bespoke domain tables
+- replay can compare claim sets and materializations directly
+
+Hermes-visible operations like conclusion writes or profile reads can still exist at the API boundary, but internally they should land in the claim ledger and then flow into materializations.
+
 ### Evidence Graph
 
-Continuity should treat memory as a compiled artifact graph, not just a bag of retrieved snippets.
+Continuity should treat memory as a compiled artifact graph rooted in observations and claims, not just a bag of retrieved snippets.
 
 That means:
 - raw messages become normalized observations
-- reasoning adapters derive facts from observations
-- each derived fact stores provenance to one or more source observations
-- profile/card items are materialized views over current active facts
+- reasoning adapters derive typed claims from observations
+- each claim stores provenance to one or more source observations
+- profile/card items are materialized views over current active claims
 - summaries and dialectic answers can cite supporting evidence
-- facts can supersede, contradict, or decay over time without silent corruption
+- claims can supersede, contradict, expire, or be corrected over time without silent corruption
 
 This provides three major benefits:
 - trust: the system can explain why it believes something
-- maintainability: stale facts can be invalidated or re-derived surgically
-- adapter portability: Codex-, Claude-, and OpenCode-derived facts can coexist with the same evidence model
+- maintainability: stale claims can be invalidated or re-derived surgically
+- adapter portability: Codex-, Claude-, and OpenCode-derived claims can coexist with the same evidence model
 
-The Evidence Graph should be a first-class storage and API concern, not a debugging afterthought.
+The Evidence Graph should be a first-class storage and API concern, not a debugging afterthought. It should be implemented over observations, claims, and claim-to-materialization edges rather than parallel durable fact tables.
 
 ### Temporal Belief Revision
 
-Continuity should not treat all remembered facts as equally current.
+Continuity should not treat all remembered claims as equally current.
 
-It should maintain an explicit belief layer on top of the Evidence Graph:
+It should maintain an explicit belief layer on top of the claim ledger:
 - observations record what was said or seen
-- derived facts express candidate interpretations
-- beliefs represent the system's current best view
+- claims express typed candidate memory assertions
+- beliefs represent the system's current best materialized view
 - belief updates track promotions, demotions, supersessions, corrections, and expirations
 
 This lets the system distinguish:
-- currently believed facts
-- stale but historically important facts
-- contradicted facts
+- currently believed claims
+- stale but historically important claims
+- contradicted claims
 - corrected preferences
-- facts that require re-derivation after new evidence
+- claims that require re-derivation after new evidence
 
 The revision engine should consider:
 - freshness
 - evidence strength
+- validity windows
 - recency of supporting messages
 - contradiction or supersession edges
 - source diversity
@@ -141,6 +178,7 @@ Continuity should not only store memory state. It should store how memory decisi
 
 For each answered turn, the system should preserve a canonical decision record containing:
 - the retrieval query and retrieval candidates
+- the active claims selected for use
 - the active beliefs selected for use
 - the prompt-ready memory block that was assembled
 - the reasoning adapter input/output envelope
@@ -157,7 +195,7 @@ This provides the most compounding long-term leverage:
 - memory quality becomes measurable instead of anecdotal
 - retrieval and belief changes can be regression-tested against real turns
 - adapter comparisons become apples-to-apples
-- the system can learn from stale recalls, missed facts, and incorrect carry-forward assumptions
+- the system can learn from stale recalls, missed claims, and incorrect carry-forward assumptions
 
 The replay engine should be a first-class evaluation and hardening subsystem, not an optional debug log.
 
@@ -165,7 +203,7 @@ The replay engine should be a first-class evaluation and hardening subsystem, no
 
 Continuity should not treat all memories as the same kind of object.
 
-It should define an explicit ontology for the memory classes Hermes-like agents actually rely on, such as:
+It should define an explicit ontology for the claim classes Hermes-like agents actually rely on, such as:
 - `preference`
 - `biography`
 - `relationship`
@@ -177,7 +215,7 @@ It should define an explicit ontology for the memory classes Hermes-like agents 
 - `ephemeral_context`
 - `assistant_self_model`
 
-Each type should carry explicit policies for:
+Each claim type should carry explicit policies for:
 - promotion into durable belief
 - decay or expiration behavior
 - contradiction and supersession handling
@@ -186,12 +224,12 @@ Each type should carry explicit policies for:
 - acceptable evidence sources
 
 This is the cleanest way to keep the belief engine principled:
-- changing user preferences should not be handled like repository facts
+- changing user preferences should not be handled like repository claims
 - temporary task context should not be rendered like long-term biography
 - open questions should not be promoted like settled beliefs
 - assistant self-model updates should be partitioned from user memory
 
-The ontology should be a core runtime primitive. Without it, belief revision and retrieval risk collapsing into generic scoring heuristics.
+The ontology should be a core runtime primitive attached to claims. Without it, belief revision and retrieval risk collapsing into generic scoring heuristics.
 
 ### Versioned Memory Policy Layer
 
@@ -202,10 +240,11 @@ It should define explicit policy packs, starting with something like:
 
 Each policy pack should own:
 - the active ontology and allowed memory types
+- claim derivation and claim-normalization rules
 - per-type belief revision rules
 - retrieval and ranking profiles
 - prompt rendering rules
-- conclusion derivation settings
+- claim derivation settings
 - migration compatibility rules where needed
 
 This makes the rest of the architecture governable:
@@ -226,8 +265,11 @@ Treat these as source inputs:
 - reasoning adapter versions and output schemas
 - prompt-rendering rules where they affect stored artifacts
 
-Treat these as compiled artifacts:
-- derived facts
+Treat these as canonical derived IR:
+- claims
+- claim relations
+
+Treat these as compiled materializations:
 - beliefs
 - peer cards and representations
 - summaries
@@ -280,7 +322,7 @@ Continuity should not treat all retained memory as equally expensive, equally ur
 
 It should define a small set of generational tiers, for example:
 - `hot`: current working context, recent active beliefs, prompt-adjacent artifacts
-- `warm`: durable preferences, commitments, stable project facts, peer cards
+- `warm`: durable preferences, commitments, stable project knowledge claims, peer cards
 - `cold`: older observations, superseded beliefs, long-tail evidence that should remain recallable
 - `frozen`: replay records, archival snapshots, historical artifacts retained mainly for audit and evaluation
 
@@ -308,7 +350,7 @@ Define a minimal adapter interface for only the reasoning work this project need
 - `answer_query`
 - `generate_structured`
 - `summarize_session`
-- `derive_conclusions`
+- `derive_claims`
 
 The first implementation is:
 - `CodexReasoningAdapter`
@@ -339,7 +381,7 @@ If `zvec` persistence semantics ever prove insufficient for the full workload, t
 - in-process access
 - simpler deploy story than pgvector
 
-It should not own the session / peer / conclusion domain model.
+It should not own the session / peer / claim domain model.
 
 `zvec` should index evidence-bearing artifacts, not replace the graph that explains where those artifacts came from.
 
@@ -359,7 +401,8 @@ It should not own the session / peer / conclusion domain model.
 - Semantic search through `zvec`
 - File/history migration and AI identity seeding
 - A small consumer-facing API for host integrations
-- Evidence-backed facts, with provenance and supersession tracking
+- An immutable observation log and typed claim ledger as the canonical memory IR
+- Evidence-backed claims, with provenance, supersession, correction, and validity tracking
 - Explicit current-belief management with freshness and contradiction handling
 - Turn-level decision capture and offline replay for retrieval, belief, and reasoning evaluation
 - Type-aware memory classification, policy enforcement, and prompt rendering
@@ -381,7 +424,7 @@ It should not own the session / peer / conclusion domain model.
 - `src/continuity/config.py`
 - `src/continuity/store/sqlite.py`
 - `src/continuity/store/schema.py`
-- `src/continuity/store/evidence_graph.py`
+- `src/continuity/store/claims.py`
 - `src/continuity/store/belief_revision.py`
 - `src/continuity/store/replay.py`
 - `src/continuity/ontology.py`
@@ -429,7 +472,7 @@ It should not own the session / peer / conclusion domain model.
 **Demo/Validation**:
 - Write a compatibility table mapping Hermes Honcho features to Continuity features.
 - Define the core SQLite entities and the reasoning adapter interface.
-- Define the Evidence Graph entities and invariants.
+- Define the observation-log and claim-ledger invariants.
 - Define the belief-state and revision invariants.
 - Define replay-record and replay-run invariants.
 - Define typed-memory classes and policy invariants.
@@ -476,7 +519,7 @@ It should not own the session / peer / conclusion domain model.
   - `answer_query`
   - `generate_structured`
   - `summarize_session`
-  - `derive_conclusions`
+  - `derive_claims`
 - **Dependencies**: Task 1.1
 - **Acceptance Criteria**:
   - Interface is minimal and Hermes-driven.
@@ -484,32 +527,35 @@ It should not own the session / peer / conclusion domain model.
 - **Validation**:
   - Static typing and fake adapter tests.
 
-### Task 1.4: Define Evidence Graph invariants
-- **Location**: `docs/architecture.md`, `tests/test_evidence_model.py`
-- **Description**: Define the required provenance model:
-  - every derived fact links to source observations
-  - facts may supersede or conflict with prior facts
-  - profile/card materializations are projections over active facts
-  - dialectic answers may include supporting evidence payloads
+### Task 1.4: Define observation and claim-ledger invariants
+- **Location**: `src/continuity/store/claims.py`, `docs/architecture.md`, `tests/test_claim_model.py`
+- **Description**: Define the canonical memory IR:
+  - observations are immutable normalized source records
+  - claims are append-only, typed, scoped, and provenance-linked
+  - claims carry `observed_at`, `learned_at`, `valid_from`, and `valid_to` where applicable
+  - claim relations encode support, supersession, contradiction, and correction
+  - profile/card materializations are projections over active claims
+  - dialectic answers may include supporting claim and observation payloads
 - **Dependencies**: Task 1.1
 - **Acceptance Criteria**:
-  - The graph rules are explicit and testable.
-  - No derived memory artifact exists without provenance.
+  - The observation/claim rules are explicit and testable.
+  - No durable derived memory artifact exists outside the claim ledger.
+  - No host-visible memory artifact exists without claim provenance.
 - **Validation**:
   - Invariant tests and architecture review.
 
 ### Task 1.5: Define belief revision invariants
 - **Location**: `docs/architecture.md`, `tests/test_belief_revision_model.py`
 - **Description**: Define the required temporal belief model:
-  - beliefs are projections over evidence-backed facts
-  - contradictory facts do not silently coexist as equally active truth
+  - beliefs are projections over evidence-backed claims
+  - contradictory claims do not silently coexist as equally active truth
   - explicit corrections can supersede older beliefs
   - stale beliefs can decay without deleting source evidence
-  - retrieval should prefer active beliefs over merely historical facts
+  - retrieval should prefer active beliefs over merely historical claims
 - **Dependencies**: Tasks 1.1 and 1.4
 - **Acceptance Criteria**:
   - The revision rules are explicit and testable.
-  - “Current belief” and “historical evidence” are clearly separated.
+  - “Current belief” and “historical claim history” are clearly separated.
 - **Validation**:
   - Invariant tests and architecture review.
 
@@ -531,14 +577,14 @@ It should not own the session / peer / conclusion domain model.
 - **Location**: `src/continuity/ontology.py`, `docs/architecture.md`, `tests/test_ontology.py`
 - **Description**: Define the memory classes and their policy rules:
   - which memory types exist in v1
-  - what evidence can produce each type
+  - what evidence can produce each claim type
   - how each type decays, conflicts, or gets promoted
   - how each type should be rendered into prompt context
   - which types are user-memory, assistant-memory, shared-session context, or ephemeral state
 - **Dependencies**: Tasks 1.1, 1.4, and 1.5
 - **Acceptance Criteria**:
   - The ontology is small, explicit, and Hermes-driven.
-  - Belief revision and retrieval policies can reference ontology types directly.
+  - Claim derivation, belief revision, and retrieval policies can reference ontology types directly.
 - **Validation**:
   - Invariant tests and architecture review.
 
@@ -547,8 +593,8 @@ It should not own the session / peer / conclusion domain model.
 - **Description**: Define how named policy packs govern memory behavior:
   - policy pack identity and versioning
   - which ontology and memory classes a policy enables
-  - how a policy supplies per-type revision and retrieval rules
-  - how prompt rendering and derivation behavior are attached to a policy
+  - how a policy supplies claim-derivation, per-type revision, and retrieval rules
+  - how prompt rendering and materialization behavior are attached to a policy
   - how replay compares decisions across policy versions
 - **Dependencies**: Tasks 1.5, 1.6, and 1.7
 - **Acceptance Criteria**:
@@ -560,14 +606,14 @@ It should not own the session / peer / conclusion domain model.
 ### Task 1.9: Define incremental compiler invariants
 - **Location**: `src/continuity/compiler.py`, `docs/architecture.md`, `tests/test_compiler_model.py`
 - **Description**: Define the compiler model for derived memory artifacts:
-  - which artifacts are compiled vs source-of-truth
+  - which artifacts are source inputs, canonical claims, and downstream materializations
   - how dependencies and fingerprints are represented
   - how dirtying and selective rebuild work
   - how policy-version and adapter-version changes trigger invalidation
   - how rebuild reasons are surfaced for inspection and replay
 - **Dependencies**: Tasks 1.4, 1.6, 1.7, and 1.8
 - **Acceptance Criteria**:
-  - Compiled artifacts and source inputs are explicitly separated.
+  - Source inputs, claims, and compiled materializations are explicitly separated.
   - Invalidation and rebuild rules are deterministic and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
@@ -604,20 +650,20 @@ It should not own the session / peer / conclusion domain model.
 
 ## Sprint 2: Build Durable Memory Storage
 
-**Goal**: Build the SQLite-backed source-of-truth layer for peers, sessions, messages, observations, facts, beliefs, and the Evidence Graph.
+**Goal**: Build the SQLite-backed source-of-truth layer for peers, sessions, messages, observations, claims, and the materializations derived from claims.
 
 **Demo/Validation**:
 - Create peers, sessions, and messages.
-- Create observations and provenance-linked facts.
-- Create active beliefs and belief updates from facts.
+- Create observations and provenance-linked claims.
+- Create active beliefs and belief updates from claims.
 - Persist replayable turn artifacts without any vector layer.
-- Persist ontology types and policy metadata on observations, facts, and beliefs.
+- Persist ontology types and policy metadata on observations, claims, and beliefs.
 - Persist policy versions on derived artifacts and turn decision records.
 - Persist compiler dependency metadata, fingerprints, and dirty queues.
 - Persist snapshot membership and active/candidate snapshot heads.
 - Persist tier assignments, tier transitions, and retention policies.
 - Reload the store from disk and recover state.
-- Query session history and derived facts without any vector layer.
+- Query session history and claims without any vector layer.
 
 ### Task 2.1: Define SQLite schema
 - **Location**: `src/continuity/store/schema.py`, `tests/test_schema.py`
@@ -627,10 +673,11 @@ It should not own the session / peer / conclusion domain model.
   - session_peers
   - messages
   - observations
-  - conclusions
+  - claims
+  - claim_sources
+  - claim_relations
   - beliefs
   - belief_updates
-  - fact_edges
   - derivation_runs
   - turn_artifacts
   - replay_runs
@@ -652,10 +699,11 @@ It should not own the session / peer / conclusion domain model.
 - **Acceptance Criteria**:
   - Schema covers all in-scope domain objects.
   - Rebuild of vector index is possible from durable state.
-  - Derived facts can be traced to source observations and derivation runs.
+  - Derived claims can be traced to source observations and derivation runs.
   - Active beliefs can be derived, superseded, and inspected independently of raw evidence.
   - Replayable turn artifacts can be stored and loaded independently of retrieval engine internals.
   - Memory records can be typed and queried by ontology class.
+  - Claim validity, scope, and relation metadata are explicit and queryable.
   - Beliefs, derivation runs, and turn artifacts can be traced to a concrete policy version.
   - Derived artifacts can be invalidated and selectively rebuilt from stored dependency metadata.
   - Host-visible artifacts can be resolved through a coherent snapshot head.
@@ -675,7 +723,7 @@ It should not own the session / peer / conclusion domain model.
 
 ### Task 2.3: Implement belief revision engine
 - **Location**: `src/continuity/store/belief_revision.py`, `tests/test_belief_revision.py`
-- **Description**: Implement the engine that converts evidence-backed facts into current beliefs:
+- **Description**: Implement the engine that converts evidence-backed claims into current beliefs:
   - create initial beliefs
   - supersede or demote stale beliefs
   - resolve explicit corrections
@@ -693,6 +741,7 @@ It should not own the session / peer / conclusion domain model.
 - **Location**: `src/continuity/store/replay.py`, `tests/test_replay_store.py`
 - **Description**: Persist canonical turn decision records and replay runs:
   - save retrieval candidates and selected evidence
+  - save active claims used for prompt assembly
   - save active beliefs used for prompt assembly
   - save memory block snapshots
   - save reasoning input/output envelopes
@@ -708,7 +757,7 @@ It should not own the session / peer / conclusion domain model.
 ### Task 2.5: Implement compiler state repository
 - **Location**: `src/continuity/compiler.py`, `tests/test_compiler_store.py`
 - **Description**: Persist and query compiler dependency state:
-  - register dependencies between source inputs and compiled artifacts
+  - register dependencies between source inputs, claims, and compiled materializations
   - persist fingerprints and artifact versions
   - enqueue dirty artifacts with reason codes
   - query rebuild plans
@@ -763,11 +812,11 @@ It should not own the session / peer / conclusion domain model.
 
 ## Sprint 3: Add Retrieval With zvec + Ollama
 
-**Goal**: Build local semantic retrieval and belief-aware profile/context lookup.
+**Goal**: Build local semantic retrieval and belief-aware profile/context lookup over claims and their materializations.
 
 **Demo/Validation**:
 - Generate embeddings via Ollama.
-- Index messages, observations, active facts, and current beliefs in `zvec`.
+- Index messages, observations, durable claims, and current beliefs in `zvec`.
 - Retrieve relevant memory context for a query.
 - Register vector-index records as rebuildable compiled artifacts.
 - Resolve retrieval against a pinned snapshot.
@@ -785,12 +834,12 @@ It should not own the session / peer / conclusion domain model.
 
 ### Task 3.2: Implement zvec indexing
 - **Location**: `src/continuity/index/zvec_index.py`, `tests/test_zvec_index.py`
-- **Description**: Index messages, observations, evidence-bearing derived facts, and current beliefs into `zvec`.
+- **Description**: Index messages, observations, evidence-bearing claims, and current beliefs into `zvec`.
 - **Dependencies**: Task 3.1
 - **Acceptance Criteria**:
   - Index entries map back to SQLite records.
   - Rebuild-from-SQLite path exists.
-  - Search hits can be resolved back to evidence graph nodes.
+  - Search hits can be resolved back to observation and claim nodes.
   - Belief-state indexing is distinguishable from raw-history indexing.
   - Index entries participate in compiler invalidation and rebuild flows.
 - **Validation**:
@@ -812,7 +861,7 @@ It should not own the session / peer / conclusion domain model.
   - Retrieval works from local state only.
   - Recall-mode behavior is explicit.
   - Search results and prompt memory can expose provenance when needed.
-  - Retrieval prefers active, well-supported beliefs over stale historical facts by default.
+  - Retrieval prefers active beliefs and well-supported current claims over stale historical claims by default.
   - Retrieval and prompt assembly can prioritize or suppress memory types based on context.
   - Retrieval behavior is selectable and inspectable by policy version.
   - Retrieval can pin to a specific snapshot for coherent reads.
@@ -822,11 +871,11 @@ It should not own the session / peer / conclusion domain model.
 
 ## Sprint 4: Add Codex SDK Reasoning
 
-**Goal**: Implement the first reasoning adapter and use it for Honcho-like chat, summaries, and conclusion derivation.
+**Goal**: Implement the first reasoning adapter and use it for Honcho-like chat, summaries, and claim derivation.
 
 **Demo/Validation**:
 - Answer a dialectic-style query from stored memory.
-- Generate structured conclusions from conversation history.
+- Generate structured claims from conversation history.
 - Summarize a session through the adapter.
 - Preserve provenance links for all derived outputs.
 - Feed the belief revision layer after derivation.
@@ -840,7 +889,7 @@ It should not own the session / peer / conclusion domain model.
 - **Description**: Implement the reasoning adapter using Codex SDK:
   - model `gpt-5.4`
   - low reasoning
-  - structured output for conclusion derivation
+  - structured output for claim derivation
   - text output for dialectic answers
   - structured evidence references in outputs where applicable
 - **Dependencies**: Sprint 1 complete
@@ -851,18 +900,18 @@ It should not own the session / peer / conclusion domain model.
 - **Validation**:
   - Fake adapter unit tests and opt-in live tests.
 
-### Task 4.2: Implement conclusion derivation pipeline
-- **Location**: `src/continuity/reasoning/*.py`, `tests/test_conclusions.py`
-- **Description**: Use Codex adapter to derive durable conclusions and update peer cards/representations.
+### Task 4.2: Implement claim derivation pipeline
+- **Location**: `src/continuity/reasoning/*.py`, `tests/test_claim_derivation.py`
+- **Description**: Use Codex adapter to derive durable typed claims and update peer cards/representations.
 - **Dependencies**: Task 4.1
 - **Acceptance Criteria**:
-  - Derived conclusions are persisted in SQLite.
-  - Retrieval index updates after new conclusions.
-  - Each derived conclusion links to the observations and derivation run that produced it.
-  - Belief revision runs after derivation and updates the current belief state.
-  - Derived conclusions are assigned ontology types before entering the belief layer.
+  - Derived claims are persisted in SQLite.
+  - Retrieval index updates after new claims.
+  - Each derived claim links to the observations and derivation run that produced it.
+  - Belief revision runs after claim derivation and updates the current belief state.
+  - Derived claims are assigned ontology types before entering the belief layer.
   - Derivation runs record the policy version that governed classification and promotion.
-  - Derived conclusions register compiler dependencies on observations, policy version, and adapter version.
+  - Derived claims register compiler dependencies on observations, policy version, and adapter version.
   - Derived outputs can be staged into a candidate snapshot without mutating the active snapshot.
   - Derived outputs receive an initial tier assignment appropriate to their ontology type and policy.
 - **Validation**:
@@ -884,7 +933,7 @@ It should not own the session / peer / conclusion domain model.
 - **Description**: Record the artifacts needed for replay whenever Continuity answers a memory question or assembles a prompt memory block.
 - **Dependencies**: Tasks 3.3, 4.1, and 4.3
 - **Acceptance Criteria**:
-  - Retrieval inputs, selected beliefs, prompt memory block, and reasoning envelopes are durably captured.
+  - Retrieval inputs, selected claims, selected beliefs, prompt memory block, and reasoning envelopes are durably captured.
   - Capture is deterministic and versioned.
   - Turn artifacts record the active policy pack.
   - Turn artifacts record the snapshot used for the read.
@@ -897,7 +946,7 @@ It should not own the session / peer / conclusion domain model.
 **Goal**: Make the system practical for Hermes integration and keep derived memory fresh without broad recomputation.
 
 **Demo/Validation**:
-- Change a source observation and rebuild only affected artifacts.
+- Change a source observation and rebuild only affected claims and materializations.
 - Change a policy version and produce a targeted rebuild plan.
 - Build a candidate snapshot and promote it atomically.
 - Promote and demote artifacts across tiers without breaking host-visible reads.
@@ -910,11 +959,11 @@ It should not own the session / peer / conclusion domain model.
 - **Description**: Build the compiler runtime:
   - detect source changes
   - compute rebuild plans from dependency metadata
-  - rebuild affected facts, beliefs, cards, summaries, caches, and index records
+  - rebuild affected claims, beliefs, cards, summaries, caches, and index records
   - expose rebuild reasons for inspection and replay
 - **Dependencies**: Sprints 2, 3, and 4 complete
 - **Acceptance Criteria**:
-  - Source edits, policy upgrades, and adapter upgrades rebuild only affected artifacts.
+  - Source edits, policy upgrades, and adapter upgrades rebuild only affected claims and materializations.
   - Rebuild plans are deterministic and explainable.
   - Rebuild output can be materialized into a candidate snapshot rather than mutating the active head.
 - **Validation**:
@@ -968,7 +1017,7 @@ It should not own the session / peer / conclusion domain model.
   - prior session history import
   - `MEMORY.md` and `USER.md` import
   - AI identity seeding from `SOUL.md`/similar files
-  - provenance tagging for imported facts
+  - provenance tagging for imported claims
 - **Dependencies**: Sprint 2 complete
 - **Acceptance Criteria**:
   - Migration is deterministic and replay-safe.
@@ -985,7 +1034,7 @@ It should not own the session / peer / conclusion domain model.
   - get prompt memory block
   - answer memory question
   - write conclusion
-  - inspect evidence for a fact or answer
+  - inspect evidence for a claim or answer
   - inspect turn decision record
   - inspect active policy pack and policy version
   - inspect compiler status and rebuild reasons
@@ -1053,9 +1102,11 @@ It should not own the session / peer / conclusion domain model.
   - prompt memory assembly
   - conclusion writes
   - profile and search results
-- Add evidence graph tests for:
+- Add claim-ledger tests for:
+  - append-only claim invariants
   - provenance completeness
-  - supersession/conflict behavior
+  - supersession/conflict/correction behavior
+  - bitemporal validity-window behavior
   - selective re-derivation after source changes
 - Add belief revision tests for:
   - explicit correction handling
@@ -1063,7 +1114,7 @@ It should not own the session / peer / conclusion domain model.
   - conflict resolution ordering
   - “what changed?” answer support
 - Add ontology tests for:
-  - type assignment for derived conclusions
+  - type assignment for derived claims
   - per-type decay and supersession rules
   - prompt rendering differences by memory class
   - partitioning of user, assistant, and ephemeral memory
@@ -1077,7 +1128,7 @@ It should not own the session / peer / conclusion domain model.
   - explicit correction invalidation
   - policy-upgrade rebuild planning
   - adapter-upgrade rebuild planning
-  - selective rebuild of only affected artifacts
+  - selective rebuild of only affected claims and materializations
 - Add snapshot tests for:
   - coherent reads during background rebuild
   - candidate snapshot promotion
@@ -1092,14 +1143,17 @@ It should not own the session / peer / conclusion domain model.
   - deterministic turn artifact capture
   - retrieval-only counterfactual replays
   - belief-policy counterfactual replays
+  - claim-set comparison on the same stored turns
   - adapter comparison on the same stored turns
 - Keep all live tests opt-in.
 
 ## Potential Risks And Gotchas
 
 - `zvec` should not become the source of truth. Treat it as rebuildable.
-- The Evidence Graph can become complex quickly if provenance rules are vague. Keep graph edges explicit and minimal.
+- The claim ledger can sprawl if claim granularity is vague. Keep claim boundaries explicit and Hermes-driven.
+- The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-claim and claim-to-materialization edges explicit and minimal.
 - Belief revision can become heuristic sludge if scoring rules are underdefined. Keep revision rules explicit, deterministic, and inspectable.
+- Claim validity windows can become ambiguous if `observed_at`, `learned_at`, and `valid_*` semantics are not defined early. Lock those semantics in Sprint 1.
 - The ontology can sprawl if too many classes are introduced too early. Keep v1 small and Hermes-driven.
 - Policy packs can become a dumping ground for arbitrary flags. Keep them opinionated, versioned, and tightly scoped to host-visible behavior.
 - Compiler dependency graphs can become either too coarse or too granular. Keep artifact boundaries explicit and validate invalidation behavior with fixtures.
@@ -1122,14 +1176,15 @@ It should not own the session / peer / conclusion domain model.
 ## Recommended Execution Order
 
 1. Implement SQLite source-of-truth first.
-2. Lock the typed memory ontology before retrieval and derivation policies spread.
-3. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-4. Lock the compiler dependency model before derived artifacts spread across the system.
-5. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
-6. Lock the generational tiering model before retrieval and retention defaults spread.
-7. Add Ollama embeddings and `zvec` retrieval next.
-8. Add Codex adapter after retrieval.
-9. Add turn artifact capture as part of the first end-to-end reasoning path.
-10. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-11. Add prefetch and migration after core retrieval/reasoning work.
-12. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+2. Lock the observation-log and typed claim-ledger model before belief revision and materializations spread.
+3. Lock the typed memory ontology before retrieval and derivation policies spread.
+4. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+5. Lock the compiler dependency model before downstream materializations spread across the system.
+6. Lock the snapshot consistency model before prefetch and host-facing read contracts spread.
+7. Lock the generational tiering model before retrieval and retention defaults spread.
+8. Add Ollama embeddings and `zvec` retrieval next.
+9. Add Codex adapter after retrieval.
+10. Add turn artifact capture as part of the first end-to-end reasoning path.
+11. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+12. Add prefetch and migration after core retrieval/reasoning work.
+13. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
