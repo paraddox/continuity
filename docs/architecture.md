@@ -529,6 +529,67 @@ Prompt exposure remains status-aware:
 This keeps prompt packing bounded, explainable, and replayable under one
 inspectable contract.
 
+## Snapshot Consistency Layer
+
+Continuity never serves mixed-state memory. Every retrieval, prompt assembly,
+answer query, prefetch warm, and replay run pins to one immutable snapshot for
+the whole operation.
+
+Each snapshot carries:
+
+- one `snapshot_id`
+- one optional parent snapshot lineage pointer
+- one policy stamp
+- explicit references to compiled view artifacts and vector-index artifacts
+- the transaction boundary that produced it
+
+The read contract stays small and explicit:
+
+- retrieval runs against one snapshot
+- prompt assembly runs against one snapshot
+- replay runs against one snapshot
+- hosts read `current`
+- compiler work writes a candidate snapshot first
+
+Publication is inspectable because the active head and each candidate snapshot
+are distinct references. Promotion from a candidate snapshot to the active head
+is explicit, diffable, and reversible through rollback to an earlier snapshot
+without mutating the snapshot payloads themselves.
+
+This keeps forgetting, sealing, expunge, and rebuild publication atomic at the
+snapshot boundary instead of leaking partially rebuilt or partially withdrawn
+artifacts into host reads.
+
+## Generational Memory Tiering Layer
+
+Continuity uses a small, policy-driven generational tier model:
+
+- `hot` for current working context, active commitments, and prompt-adjacent
+  artifacts
+- `warm` for stable durable memory that should remain available in ordinary host
+  reads
+- `cold` for recallable long-tail evidence and superseded material that should
+  not dominate default reads
+- `frozen` for replay records, snapshot history, and audit-heavy archival
+  artifacts
+
+Tiering starts only after a candidate memory passes durable admission. It does
+not change source-of-truth claim semantics; it only governs retrieval defaults,
+snapshot residency, rebuild urgency, and retention pressure.
+
+The tier policy remains inspectable about:
+
+- default claim-type placement
+- compiled-view default tiers
+- archival artifact placement
+- promotion and demotion edges
+- utility-driven promotion, demotion, and pruning bias
+- expunge reachability for `cold` and `frozen` artifacts
+
+`hot` and `warm` tiers are included in active host-visible reads by default.
+`cold` is recallable without bloating normal reads, and `frozen` remains
+archival-only unless audit or replay workflows ask for it directly.
+
 ## Memory Transaction Pipeline
 
 Continuity treats runtime behavior as a closed set of named transactions rather
