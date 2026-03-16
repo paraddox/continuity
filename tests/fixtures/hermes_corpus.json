@@ -1,0 +1,408 @@
+{
+  "generated_at": "2026-03-16",
+  "source_root": "~/.hermes/hermes-agent",
+  "fixtures": [
+    {
+      "id": "async-prefetch-cross-turn-context",
+      "title": "Async prefetch warms Honcho context for the next turn",
+      "category": "honcho_integration_behavior",
+      "summary": "Hermes creates one Honcho-backed session wrapper, attaches the active session context to the tool layer, prewarms context on startup whenever recall mode is not tools, and assembles user representation, AI representation, and optional dialectic synthesis into a next-turn continuity block.",
+      "fixture_families": [
+        "core_engine",
+        "hermes_parity"
+      ],
+      "normalized_input": {
+        "startup": {
+          "recall_mode": "hybrid",
+          "session_key": "telegram:123456",
+          "empty_honcho_session_triggers_memory_migration": true
+        },
+        "prefetch_cache": {
+          "representation": "User prefers concise technical answers.",
+          "card": "- Senior engineer\n- Uses Hermes daily",
+          "ai_representation": "Hermes keeps continuity via Honcho.",
+          "ai_card": "- AI peer: hermes",
+          "dialectic_result": "You were implementing continuity fixtures."
+        }
+      },
+      "expected_behavior": {
+        "startup_actions": [
+          "attach session context to honcho tools",
+          "prewarm context cache when recall mode is not tools",
+          "register an exit hook that flushes pending Honcho writes"
+        ],
+        "prefetch_sections": [
+          "## User representation",
+          "## AI peer representation",
+          "## Continuity synthesis"
+        ],
+        "tools_mode_skips_prefetch": true
+      },
+      "provenance": [
+        {
+          "path": "honcho_integration/session.py",
+          "line_start": 147,
+          "line_end": 204
+        },
+        {
+          "path": "honcho_integration/session.py",
+          "line_start": 464,
+          "line_end": 624
+        },
+        {
+          "path": "run_agent.py",
+          "line_start": 1592,
+          "line_end": 1718
+        }
+      ]
+    },
+    {
+      "id": "honcho-tool-surface",
+      "title": "Honcho tool surface exposes four distinct memory operations",
+      "category": "tool_descriptions",
+      "summary": "Hermes exposes exactly four Honcho tools with distinct contracts: profile for peer-card reads, search for semantic excerpt retrieval, context for dialectic synthesis, and conclude for durable user-fact writes.",
+      "fixture_families": [
+        "hermes_parity",
+        "service_contract"
+      ],
+      "normalized_input": {
+        "tools": [
+          {
+            "name": "honcho_profile",
+            "required_parameters": [],
+            "llm_backed": false,
+            "purpose": "peer card snapshot"
+          },
+          {
+            "name": "honcho_search",
+            "required_parameters": [
+              "query"
+            ],
+            "llm_backed": false,
+            "purpose": "semantic excerpt search"
+          },
+          {
+            "name": "honcho_context",
+            "required_parameters": [
+              "query"
+            ],
+            "optional_parameters": [
+              "peer"
+            ],
+            "llm_backed": true,
+            "purpose": "dialectic answer"
+          },
+          {
+            "name": "honcho_conclude",
+            "required_parameters": [
+              "conclusion"
+            ],
+            "llm_backed": false,
+            "purpose": "durable user fact write"
+          }
+        ],
+        "availability_gate": "session_manager and session_key must both be set"
+      },
+      "expected_behavior": {
+        "tool_names": [
+          "honcho_profile",
+          "honcho_search",
+          "honcho_context",
+          "honcho_conclude"
+        ],
+        "contract_assertions": [
+          "every tool returns a structured JSON string result or error",
+          "all tools reject calls when Honcho is not active for the session",
+          "profile and search are explicitly cheaper than dialectic context"
+        ]
+      },
+      "provenance": [
+        {
+          "path": "tools/honcho_tools.py",
+          "line_start": 54,
+          "line_end": 249
+        },
+        {
+          "path": "honcho_integration/cli.py",
+          "line_start": 193,
+          "line_end": 213
+        }
+      ]
+    },
+    {
+      "id": "recall-mode-contracts",
+      "title": "Recall mode controls tool visibility and memory injection strategy",
+      "category": "recall_modes",
+      "summary": "Recall mode is a small closed set with legacy alias normalization. Context mode hides Honcho tools and relies on injected memory, tools mode disables prefetch and uses tool calls only, and hybrid mode provides both injected continuity and on-demand tools.",
+      "fixture_families": [
+        "hermes_parity",
+        "service_contract"
+      ],
+      "normalized_input": {
+        "accepted_modes": [
+          "hybrid",
+          "context",
+          "tools"
+        ],
+        "legacy_aliases": {
+          "auto": "hybrid"
+        },
+        "runtime_examples": [
+          {
+            "mode": "context",
+            "tools_visible": false,
+            "context_injected": true
+          },
+          {
+            "mode": "tools",
+            "tools_visible": true,
+            "context_injected": false
+          },
+          {
+            "mode": "hybrid",
+            "tools_visible": true,
+            "context_injected": true
+          }
+        ]
+      },
+      "expected_behavior": {
+        "invalid_values_fall_back_to": "hybrid",
+        "host_block_overrides_root_config": true,
+        "tools_mode_skips_startup_prefetch": true,
+        "context_mode_hides_honcho_tools": true
+      },
+      "provenance": [
+        {
+          "path": "honcho_integration/client.py",
+          "line_start": 30,
+          "line_end": 37
+        },
+        {
+          "path": "honcho_integration/client.py",
+          "line_start": 103,
+          "line_end": 107
+        },
+        {
+          "path": "honcho_integration/client.py",
+          "line_start": 243,
+          "line_end": 247
+        },
+        {
+          "path": "honcho_integration/cli.py",
+          "line_start": 153,
+          "line_end": 162
+        },
+        {
+          "path": "run_agent.py",
+          "line_start": 1620,
+          "line_end": 1646
+        },
+        {
+          "path": "run_agent.py",
+          "line_start": 1809,
+          "line_end": 1842
+        },
+        {
+          "path": "tests/honcho_integration/test_client.py",
+          "line_start": 156,
+          "line_end": 171
+        }
+      ]
+    },
+    {
+      "id": "host-config-resolution-cases",
+      "title": "Host-scoped config parsing resolves precedence and coercion rules",
+      "category": "config_parsing_cases",
+      "summary": "Hermes resolves Honcho config by preferring the host block over root values, falling back to environment variables when needed, coercing write frequency strings into integers, and supporting both string and object memoryMode forms.",
+      "fixture_families": [
+        "core_engine",
+        "service_contract"
+      ],
+      "normalized_input": {
+        "config_cases": [
+          {
+            "name": "host overrides root workspace and aiPeer",
+            "config": {
+              "workspace": "root-ws",
+              "aiPeer": "root-ai",
+              "hosts": {
+                "hermes": {
+                  "workspace": "host-ws",
+                  "aiPeer": "host-ai"
+                }
+              }
+            }
+          },
+          {
+            "name": "writeFrequency string coerces to integer",
+            "config": {
+              "writeFrequency": "3"
+            }
+          },
+          {
+            "name": "memoryMode object provides default plus peer override",
+            "config": {
+              "hosts": {
+                "hermes": {
+                  "memoryMode": {
+                    "default": "hybrid",
+                    "hermes": "honcho"
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expected_behavior": {
+        "resolution_order": [
+          "host block",
+          "root config",
+          "environment fallback",
+          "built-in defaults"
+        ],
+        "write_frequency_examples": [
+          "async",
+          "turn",
+          "session",
+          5
+        ],
+        "memory_mode_object_support": true
+      },
+      "provenance": [
+        {
+          "path": "honcho_integration/client.py",
+          "line_start": 40,
+          "line_end": 61
+        },
+        {
+          "path": "honcho_integration/client.py",
+          "line_start": 126,
+          "line_end": 252
+        },
+        {
+          "path": "tests/honcho_integration/test_client.py",
+          "line_start": 72,
+          "line_end": 187
+        },
+        {
+          "path": "tests/honcho_integration/test_async_memory.py",
+          "line_start": 61,
+          "line_end": 177
+        }
+      ]
+    },
+    {
+      "id": "session-clear-without-durable-forget",
+      "title": "Current Hermes source clears local session cache but does not expose a durable forget API",
+      "category": "clearing_forgetting",
+      "summary": "The harvested Hermes Honcho source currently guarantees local session clearing by emptying cached messages and advancing the updated timestamp. No durable Honcho forget endpoint is exposed in this source slice, so later Continuity forgetting semantics must not be inferred from this task.",
+      "fixture_families": [
+        "core_engine",
+        "hermes_parity"
+      ],
+      "normalized_input": {
+        "session_messages": [
+          {
+            "role": "user",
+            "content": "msg1"
+          },
+          {
+            "role": "assistant",
+            "content": "msg2"
+          }
+        ],
+        "operation": "clear"
+      },
+      "expected_behavior": {
+        "messages_after": [],
+        "updated_at_advances": true,
+        "durable_forget_surface_present": false
+      },
+      "provenance": [
+        {
+          "path": "honcho_integration/session.py",
+          "line_start": 53,
+          "line_end": 65
+        },
+        {
+          "path": "tests/honcho_integration/test_session.py",
+          "line_start": 83,
+          "line_end": 95
+        }
+      ]
+    },
+    {
+      "id": "openclaw-migration-artifacts",
+      "title": "OpenClaw memory migration uploads prior transcripts and seeded memory files",
+      "category": "migration_examples",
+      "summary": "Hermes migrates two kinds of legacy material into Honcho: prior conversation history uploaded as an XML transcript file, and existing MEMORY.md, USER.md, and SOUL.md files wrapped as prior memory files. The interactive migrate walkthrough also defines which OpenClaw files map to the user peer and the AI peer.",
+      "fixture_families": [
+        "core_engine",
+        "hermes_parity",
+        "service_contract"
+      ],
+      "normalized_input": {
+        "history_messages": [
+          {
+            "role": "user",
+            "content": "Hello",
+            "timestamp": "2026-01-01T00:00:00"
+          },
+          {
+            "role": "assistant",
+            "content": "Hi!",
+            "timestamp": "2026-01-01T00:01:00"
+          }
+        ],
+        "memory_files": [
+          {
+            "original_file": "MEMORY.md",
+            "upload_name": "consolidated_memory.md",
+            "target_peer": "user"
+          },
+          {
+            "original_file": "USER.md",
+            "upload_name": "user_profile.md",
+            "target_peer": "user"
+          },
+          {
+            "original_file": "SOUL.md",
+            "upload_name": "agent_soul.md",
+            "target_peer": "ai"
+          }
+        ],
+        "walkthrough_steps": [
+          "detect OpenClaw files",
+          "upload user memory files",
+          "seed AI identity files",
+          "explain storage and context injection changes"
+        ]
+      },
+      "expected_behavior": {
+        "history_wrapper": "<prior_conversation_history>",
+        "memory_wrapper": "<prior_memory_file>",
+        "history_upload_name": "prior_history.txt",
+        "memory_metadata_source": "local_memory",
+        "history_metadata_source": "local_jsonl"
+      },
+      "provenance": [
+        {
+          "path": "honcho_integration/session.py",
+          "line_start": 626,
+          "line_end": 795
+        },
+        {
+          "path": "honcho_integration/cli.py",
+          "line_start": 518,
+          "line_end": 723
+        },
+        {
+          "path": "tests/honcho_integration/test_session.py",
+          "line_start": 129,
+          "line_end": 154
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "fixture_family": "service_contract",
+  "fixture_ids": [
+    "honcho-tool-surface",
+    "recall-mode-contracts",
+    "host-config-resolution-cases",
+    "openclaw-migration-artifacts"
+  ]
+}

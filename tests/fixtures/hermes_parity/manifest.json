@@ -1,0 +1,10 @@
+{
+  "fixture_family": "hermes_parity",
+  "fixture_ids": [
+    "async-prefetch-cross-turn-context",
+    "honcho-tool-surface",
+    "recall-mode-contracts",
+    "session-clear-without-durable-forget",
+    "openclaw-migration-artifacts"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "fixture_family": "core_engine",
+  "fixture_ids": [
+    "async-prefetch-cross-turn-context",
+    "host-config-resolution-cases",
+    "session-clear-without-durable-forget",
+    "openclaw-migration-artifacts"
+  ]
+}
