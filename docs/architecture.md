@@ -64,6 +64,51 @@ the stable address, applicability scope, default disclosure policy,
 This keeps conflict resolution, retrieval, and later belief projection
 locus-scoped instead of forcing the engine to scan undifferentiated claims.
 
+## Belief Revision
+
+Beliefs are projections over claims grouped by subject and locus, not separate
+durable roots. Current belief and historical claim history stay separate so the
+engine can revise what it currently relies on without deleting evidence-backed
+claim history.
+
+Revision rules stay explicit:
+
+- contradictory surviving claims do not silently coexist as equally active truth
+- explicit corrections and supersessions remove older claims from current belief
+  without erasing the older history
+- stale beliefs may decay into qualified output while keeping their underlying
+  claim history available
+- each locus resolves according to its aggregation mode
+- retrieval should prefer active beliefs over merely historical claims
+
+## Epistemic Status
+
+Continuity exposes explicit epistemic status instead of flattening every result
+into asserted truth. The v1 status set is:
+
+- `supported`
+- `unknown`
+- `tentative`
+- `conflicted`
+- `stale`
+- `needs_confirmation`
+
+These statuses may attach to claims, locus resolutions, compiled views, and
+answers.
+
+Answer and prompt behavior follows the status:
+
+- `supported` may assert and include normally
+- `tentative` and `stale` must qualify rather than overstate certainty
+- `unknown` and `conflicted` should abstain instead of asserting unsupported
+  memory
+- `needs_confirmation` should ask for confirmation before publishing as settled
+  memory
+
+`prompt_view` should qualify tentative or stale memory, and suppress unknown,
+conflicted, or needs-confirmation state by default. Replay should be able to
+inspect whether the engine qualified, abstained, or over-asserted.
+
 ## Host-Visible Artifacts
 
 No durable derived memory artifact exists outside the claim ledger. Host-visible
