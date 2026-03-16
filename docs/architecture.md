@@ -692,6 +692,81 @@ This keeps async behavior precise: callers know which waterline was awaited,
 which phases may still be running after return, and which guarantees remain the
 same for embedded mode now and a daemon wrapper later.
 
+## Continuity Service Facade
+
+Continuity exposes one transport-neutral Continuity service facade. The
+canonical request/response contract is a typed envelope around named host
+operations such as `initialize`, `save_turn`, `search`, `get_state_view`,
+`get_timeline_view`, `get_profile_view`, `get_prompt_view`,
+`answer_memory_question`, `forget_memory`, `write_conclusion`,
+`list_memory_follow_ups`, `resolve_memory_follow_up`, `import_history`,
+`publish_snapshot`, `resolve_subject`, `inspect_evidence`,
+`inspect_admission`, `inspect_resolution_queue`, `inspect_disclosure`,
+`inspect_forgetting`, `inspect_epistemic_status`, `record_outcome`,
+`inspect_outcomes`, `inspect_utility`, `inspect_turn_decision`,
+`inspect_policy`, `inspect_compiler`, `inspect_snapshot`, and
+`inspect_tiers`.
+
+The request contract stays intentionally small:
+
+- operation name
+- transport-neutral payload only
+- optional disclosure context for host-facing reads
+- optional target snapshot binding
+- optional requested durability waterline for mutating operations
+
+The response contract stays equally small:
+
+- operation name
+- transport-neutral payload only
+- optional active snapshot id
+- optional reached durability waterline
+- optional replay artifact references
+
+This boundary freezes before host integration work spreads. Python objects such
+as repository handles, SQLite connections, threads, vector clients, or other
+transport-specific runtime details must not leak across the canonical service
+contract.
+
+## Deployment Modes And Process Boundary
+
+Continuity keeps one engine and two shells:
+
+- `embedded` is the v1 default for the internal Hermes patch
+- `daemon` is reserved for a later local wrapper
+
+The shell boundary is explicit. The engine owns transaction entrypoints,
+durability waterlines, snapshot consistency, replay artifacts, disclosure
+decisions, and the transport-neutral service contract. The embedding host or
+daemon shell owns process lifecycle, request transport, and scheduling around
+the same engine contract.
+
+Embedded and daemon modes must keep identical semantics for:
+
+- transaction entrypoints
+- durability waterlines
+- snapshot consistency
+- replay artifacts
+- disclosure decisions
+
+Transport is the only intended difference:
+
+- `embedded` uses direct in-process calls
+- `daemon` uses Unix domain sockets when it is added later
+- both modes remain local-only
+- hosted service assumptions stay out of scope
+
+SQLite ownership rules are explicit in v1:
+
+- one owning Hermes process per Continuity SQLite store
+- one serialized commit lane
+- in-process worker threads only
+- no multi-process write coordination in v1
+
+The future daemon wrapper keeps the same single-owner semantics, but the owner
+process becomes the daemon instead of Hermes. That changes process lifecycle and
+transport, not memory semantics.
+
 ## Mutation Arbiter
 
 Continuity routes every authoritative publication through one serialized commit
