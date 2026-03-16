@@ -373,6 +373,42 @@ outcomes or epistemic status. They give admission, prompting, resolution,
 retention, and replay one inspectable value model while keeping policy order
 primary and using utility only where the policy pack explicitly allows it.
 
+## Replay Artifacts
+
+Continuity keeps one canonical replay artifact format for counterfactual replay.
+The v1 replay artifact is versioned as `replay_v1` and captures:
+
+- the stable replay artifact id
+- the source transaction and waterline that produced the baseline artifact
+- deterministic replay inputs pinned to a snapshot id, journal position,
+  arbiter lane position, host surface, viewer context, and stable references
+- the baseline policy fingerprint and per-step strategy fingerprints
+- the stable output references and metric scores used for comparison
+
+Deterministic replay inputs are explicit and must not depend on hidden runtime
+state. The required input bundle includes:
+
+- the frozen snapshot id used for the read or transaction
+- the journal cut and arbiter cut that bound the authoritative source history
+- the host surface being replayed such as `prompt_view` or `answer_view`
+- the disclosure viewer, audience, channel, and purpose context
+- stable claim, observation, compiled-view, outcome, and other reference ids
+- optional query text when the host surface depends on user wording
+
+Counterfactual replay reuses the same deterministic replay inputs for every
+alternate run. Only the policy fingerprint or the retrieval, belief, and
+reasoning strategy fingerprints may vary across compared runs.
+
+Policy version comparison is explicit. Each replay run records its own policy
+fingerprint so the engine can compare baseline and alternate policy versions
+without pretending they were the same runtime decision.
+
+Replay comparison is read-only. Counterfactual replay may inspect alternate
+retrieval, belief, and reasoning outcomes, but it must not mutate authoritative
+claims, views, snapshots, or utility state. Any derived comparison output is a
+new replay artifact or evaluation result, not a publication into the source of
+truth memory.
+
 ## Host-Visible Artifacts
 
 No durable derived memory artifact exists outside the claim ledger. Host-visible
