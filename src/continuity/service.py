@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
@@ -197,6 +197,28 @@ class ServiceRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedServiceRequest:
+    request: ServiceRequest
+    contract: ServiceOperationContract
+    effective_minimum_waterline: DurabilityWaterline | None = None
+
+    def __post_init__(self) -> None:
+        if self.contract.operation is not self.request.operation:
+            raise ValueError("resolved requests must keep one service operation")
+
+        if self.effective_minimum_waterline is not None:
+            if self.contract.transaction_kind is None:
+                raise ValueError("effective_minimum_waterline requires a mutating service operation")
+            if not transaction_contract_for(self.contract.transaction_kind).supports_waterline(
+                self.effective_minimum_waterline
+            ):
+                raise ValueError(
+                    f"{self.contract.transaction_kind.value} cannot satisfy "
+                    f"{self.effective_minimum_waterline.value}"
+                )
+
+
+@dataclass(frozen=True, slots=True)
 class ServiceResponse:
     operation: ServiceOperation
     payload: Mapping[str, object]
@@ -236,6 +258,62 @@ class ServiceResponse:
                     f"{contract.transaction_kind.value} cannot report "
                     f"{self.reached_waterline.value}"
                 )
+
+
+ServiceExecutor = Callable[[ResolvedServiceRequest], ServiceResponse]
+
+
+class ContinuityServiceFacade:
+    def __init__(self, executors: Mapping[ServiceOperation, ServiceExecutor]) -> None:
+        normalized_executors: dict[ServiceOperation, ServiceExecutor] = {}
+        for operation, executor in executors.items():
+            if not isinstance(operation, ServiceOperation):
+                raise TypeError("service executors must be keyed by ServiceOperation")
+            if not callable(executor):
+                raise TypeError(f"{operation.value} executor must be callable")
+            normalized_executors[operation] = executor
+        self._executors = normalized_executors
+
+    def supported_operations(self) -> tuple[ServiceOperation, ...]:
+        return tuple(operation for operation in ServiceOperation if operation in self._executors)
+
+    def contracts(self) -> tuple[ServiceOperationContract, ...]:
+        return tuple(service_contract_for(operation) for operation in self.supported_operations())
+
+    def resolve_request(self, request: ServiceRequest) -> ResolvedServiceRequest:
+        if request.contract_version != SERVICE_CONTRACT_VERSION:
+            raise ValueError(f"unsupported service contract version: {request.contract_version}")
+
+        contract = service_contract_for(request.operation)
+        effective_minimum_waterline = request.minimum_waterline or contract.default_minimum_waterline
+        return ResolvedServiceRequest(
+            request=request,
+            contract=contract,
+            effective_minimum_waterline=effective_minimum_waterline,
+        )
+
+    def execute(self, request: ServiceRequest) -> ServiceResponse:
+        executor = self._executors.get(request.operation)
+        if executor is None:
+            raise NotImplementedError(f"{request.operation.value} is not configured")
+
+        resolved_request = self.resolve_request(request)
+        response = executor(resolved_request)
+        if not isinstance(response, ServiceResponse):
+            raise TypeError("service executors must return ServiceResponse objects")
+        if response.operation is not request.operation:
+            raise ValueError("service executors must respond with the same operation they received")
+
+        required_waterline = resolved_request.effective_minimum_waterline
+        if required_waterline is not None:
+            if response.reached_waterline is None:
+                raise ValueError(f"{request.operation.value} must report a reached waterline")
+            if response.reached_waterline.rank < required_waterline.rank:
+                raise ValueError(
+                    f"{request.operation.value} must reach at least {required_waterline.value}"
+                )
+
+        return response
 
 
 @lru_cache(maxsize=1)
