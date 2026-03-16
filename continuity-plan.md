@@ -64,13 +64,15 @@ The seventeenth core rule is that authoritative mutation should be journaled app
 
 The eighteenth core rule is that memory must surface epistemic status explicitly. Claims, locus resolutions, compiled views, and answers should be able to say `unknown`, `tentative`, `conflicted`, `stale`, or `needs_confirmation` instead of always collapsing to a single asserted state.
 
-The nineteenth core rule is that memory must record downstream outcomes explicitly. Corrections, confirmations, overrides, stale-on-use events, and user acceptance should become first-class outcome records rather than only ad hoc notes or replay scores.
+The nineteenth core rule is that unresolved memory must enter an explicit resolution loop. `needs_confirmation`, `needs_followup`, conflicts, stale-on-use events, and open questions should become queue items with priorities, not passive annotations that depend on ad hoc host behavior.
 
-The twentieth core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
+The twentieth core rule is that memory must record downstream outcomes explicitly. Corrections, confirmations, overrides, stale-on-use events, and user acceptance should become first-class outcome records rather than only ad hoc notes or replay scores.
 
-The twenty-first core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, inclusion/exclusion traces.
+The twenty-first core rule is that memory reads must be snapshot-consistent. Continuity should expose coherent, branchable memory snapshots so hosts never read a mixed partially rebuilt state.
 
-The twenty-second core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
+The twenty-second core rule is that prompt assembly must be budgeted and explainable. `prompt_view` should be built under explicit token budgets using deterministic packing, degradation ladders, inclusion/exclusion traces.
+
+The twenty-third core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
 ## Design Direction
 
@@ -101,6 +103,7 @@ Use a split architecture:
 - a `Durability Contract` that defines which commit waterline each transaction and API guarantees
 - a `Mutation Arbiter` that serializes authoritative state transitions and snapshot-head publication
 - a `System Event Journal` that records authoritative published state transitions in append-only order
+- a `Memory Resolution Queue` that turns unresolved memory states into ranked follow-up opportunities and durable resolution actions
 - an `Outcome Ledger` that records post-hoc confirmations, corrections, overrides, and downstream usefulness
 - a `Snapshot Consistency Layer` that exposes atomic read states and candidate rebuild branches
 - a `Generational Memory Tiering Layer` that governs admission, promotion, demotion, and archival behavior
@@ -130,6 +133,7 @@ This is the right fit because Hermes needs more than vectors:
 - migration metadata
 - artifact dependency metadata
 - compilation state and dirty queues
+- resolution queue state and resolution actions
 - snapshot metadata and snapshot heads
 - retention policies and tier transition state
 - queue / prefetch state
@@ -498,6 +502,30 @@ This is the missing judgment layer:
 - answers can be more trustworthy without being artificially overconfident
 - replay can evaluate not only recall quality but calibration quality
 
+### Memory Resolution Queue
+
+Continuity should make unresolved memory actionable, not merely labeled.
+
+The queue should ingest items from:
+- admission outcomes like `needs_confirmation`
+- epistemic outputs like `conflicted`, `stale`, or `needs_confirmation`
+- ontology types like `open_question`
+- outcome labels like `needs_followup`, `stale_on_use`, or `user_overrode`
+- retrieval and answer paths that detect ambiguity worth resolving explicitly
+
+Each queue item should capture:
+- target subject, locus, claim, or derived artifact
+- why the item exists
+- suggested resolution action, such as confirm, correct, discard, keep ephemeral, or promote to durable claim
+- priority, freshness, and escalation state
+- whether it should be surfaced immediately, deferred, batched, or dropped
+
+This is the missing improvement loop:
+- unresolved memory states stop dying as inert metadata
+- the system can turn uncertainty into follow-up opportunities at the right moment
+- hosts can ask the best next clarification question instead of a generic one
+- replay can score not just recall and calibration, but resolution yield
+
 ### Outcome Ledger
 
 Continuity should record what later turned out to happen, not just what it believed at the time.
@@ -516,6 +544,7 @@ The system should be able to store outcome labels such as:
 Outcome records should be attachable to:
 - claims
 - locus resolutions
+- resolution-queue items
 - compiled views such as `prompt_view` or `answer_view`
 - turn artifacts and replay runs
 
@@ -668,6 +697,7 @@ Each policy pack should own:
 - locus-definition and locus-resolution rules
 - disclosure and redaction rules by audience, channel, and purpose
 - forgetting, sealing, and expunge rules by target type and caller
+- resolution-queue creation, ranking, escalation, and surfacing rules
 - per-type belief revision rules
 - retrieval and ranking profiles
 - prompt rendering rules
@@ -692,6 +722,7 @@ Treat these as source inputs:
 - admission policy rules and admission decisions where they affect downstream artifacts
 - subject-resolution rules and alias maps where they affect stored artifacts
 - forgetting operations and erasure tombstones
+- resolution-queue policies and resolution actions where they affect downstream artifacts
 - policy packs and policy versions
 - reasoning adapter versions and output schemas
 - prompt-rendering rules where they affect stored artifacts
@@ -722,6 +753,7 @@ This is the missing operational layer that makes the rest of the plan durable:
 - admission-policy changes can invalidate whether candidate memory should become durable at all
 - user corrections trigger targeted rebuilds instead of broad recomputation
 - forget and expunge requests trigger targeted withdrawal and rebuild instead of heuristic cleanup
+- resolution actions can reclassify, confirm, or discard memory without ad hoc write paths
 - policy upgrades can recompile memory under `hermes_v2` without corrupting prior runs
 - adapter changes can invalidate only the artifacts that depended on old behavior
 - “what changed?” becomes an answerable systems question, not just a semantic one
@@ -782,6 +814,7 @@ This gives the current architecture a scale model:
 - prompt assembly stays sharp because `hot` and selected `warm` memory dominate by default
 - compiler work can prioritize high-value artifacts first
 - old evidence remains available without bloating active snapshots
+- pending resolution work can stay `hot` without forcing uncertain memory into durable `warm`
 - replay and auditing can keep rich history in `frozen` storage without polluting host-facing reads
 
 The tiering layer should remain small and policy-driven. It is the economic control system for long-lived memory quality.
@@ -852,6 +885,7 @@ It should not own the session / peer / claim domain model.
 - Explicit current-belief management with freshness and contradiction handling
 - Append-only system event journaling for authoritative state transitions
 - Explicit epistemic status on claims, resolutions, compiled views, and answers
+- Explicit resolution-queue behavior for `needs_confirmation`, `needs_followup`, `open_question`, and other unresolved memory states
 - Explicit post-hoc outcome labels on claims, views, and decisions
 - Token-budget-aware prompt planning with inspectable packing decisions
 - Turn-level decision capture and offline replay for retrieval, belief, and reasoning evaluation
@@ -887,6 +921,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/transactions.py`
 - `src/continuity/arbiter.py`
 - `src/continuity/events.py`
+- `src/continuity/resolution_queue.py`
 - `src/continuity/views.py`
 - `src/continuity/epistemics.py`
 - `src/continuity/outcomes.py`
@@ -944,6 +979,7 @@ It should not own the session / peer / claim domain model.
 - Define the mutation arbiter and commit-lane invariants.
 - Define the system event journal and append-only event semantics.
 - Define the epistemic-status layer and abstention rules.
+- Define the memory resolution queue and follow-up invariants.
 - Define the outcome ledger and outcome-label semantics.
 - Define the budgeted prompt planner and packing invariants.
 - Define the belief-state and revision invariants.
@@ -1185,7 +1221,22 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.15: Define outcome ledger
+### Task 1.15: Define memory resolution queue
+- **Location**: `src/continuity/resolution_queue.py`, `docs/architecture.md`, `tests/test_resolution_queue_model.py`
+- **Description**: Define the unresolved-memory follow-up model:
+  - which sources can create queue items, such as `needs_confirmation`, `needs_followup`, `open_question`, stale-on-use, or conflicted loci
+  - how queue items are prioritized, escalated, deferred, batched, or dropped
+  - which resolution actions exist, such as confirm, correct, discard, keep ephemeral, or promote to durable claim
+  - how queue items are surfaced into prompts or host APIs without polluting durable memory directly
+  - how queue resolution feeds admission, belief revision, outcome recording, and replay
+- **Dependencies**: Tasks 1.4, 1.8, and 1.14
+- **Acceptance Criteria**:
+  - Unresolved memory states become explicit queue items rather than dead-end labels.
+  - The system can explain why a follow-up was queued, surfaced, deferred, or resolved.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.16: Define outcome ledger
 - **Location**: `src/continuity/outcomes.py`, `docs/architecture.md`, `tests/test_outcomes_model.py`
 - **Description**: Define the downstream outcome model:
   - which outcome labels exist in v1
@@ -1200,7 +1251,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.16: Define snapshot consistency invariants
+### Task 1.17: Define snapshot consistency invariants
 - **Location**: `src/continuity/snapshots.py`, `docs/architecture.md`, `tests/test_snapshot_model.py`
 - **Description**: Define the snapshot model for host-visible reads:
   - what belongs to a snapshot
@@ -1209,14 +1260,14 @@ It should not own the session / peer / claim domain model.
   - how promotion, rollback, and diffing work
   - how forgetting, sealing, and expunge operations withdraw content atomically through snapshots
   - how reads pin to a snapshot during retrieval, prompting, and replay
-- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, and 1.15
+- **Dependencies**: Tasks 1.6, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, and 1.16
 - **Acceptance Criteria**:
   - Snapshot reads are coherent and immutable.
   - Promotion from candidate to active is explicit and inspectable.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.17: Define generational tiering invariants
+### Task 1.18: Define generational tiering invariants
 - **Location**: `src/continuity/tiers.py`, `docs/architecture.md`, `tests/test_tiers_model.py`
 - **Description**: Define the tiering model for long-lived memory:
   - which tiers exist in v1
@@ -1226,14 +1277,14 @@ It should not own the session / peer / claim domain model.
   - how expunge reaches `cold` and `frozen` tiers without accidental resurrection
   - how tiering affects retrieval defaults, compiler urgency, and snapshot inclusion
   - how replay and audit artifacts move into archival tiers without polluting active reads
-- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, and 1.16
+- **Dependencies**: Tasks 1.7, 1.8, 1.9, 1.10, 1.11, 1.12, 1.13, 1.14, 1.15, 1.16, and 1.17
 - **Acceptance Criteria**:
   - Tier boundaries are explicit, small, and policy-driven.
   - Tiering affects retrieval and rebuild behavior without changing source-of-truth semantics.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.18: Define budgeted prompt planner
+### Task 1.19: Define budgeted prompt planner
 - **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
 - **Description**: Define the bounded prompt packing model for `prompt_view`:
   - which fragment classes can compete for prompt space
@@ -1249,7 +1300,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.19: Define system event journal
+### Task 1.20: Define system event journal
 - **Location**: `src/continuity/events.py`, `docs/architecture.md`, `tests/test_event_journal_model.py`
 - **Description**: Define the append-only control-plane event model:
   - which authoritative event types exist in v1
@@ -1264,7 +1315,7 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.20: Define disclosure/audience layer
+### Task 1.21: Define disclosure/audience layer
 - **Location**: `src/continuity/disclosure.py`, `docs/architecture.md`, `tests/test_disclosure_model.py`
 - **Description**: Define the host-read eligibility and transformation model:
   - which audience principals, viewer kinds, and channels exist in v1
@@ -1273,14 +1324,14 @@ It should not own the session / peer / claim domain model.
   - how reads compile under viewer, channel, purpose, and policy version
   - when memory is exposed directly, summarized, redacted, withheld, or gated on consent
   - how turn artifacts and replay capture disclosure decisions
-- **Dependencies**: Tasks 1.4, 1.8, 1.10, and 1.18
+- **Dependencies**: Tasks 1.4, 1.8, 1.10, and 1.19
 - **Acceptance Criteria**:
   - Host-facing reads have explicit, inspectable disclosure semantics.
   - The system can explain why memory was exposed, transformed, or withheld for a given audience.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.21: Define forgetting / retraction / erasure contract
+### Task 1.22: Define forgetting / retraction / erasure contract
 - **Location**: `src/continuity/forgetting.py`, `docs/architecture.md`, `tests/test_forgetting_model.py`
 - **Description**: Define the withdrawal model for stored memory:
   - which forgetting modes exist in v1, such as `supersede`, `suppress`, `seal`, and `expunge`
@@ -1289,14 +1340,14 @@ It should not own the session / peer / claim domain model.
   - what survives each mode in claims, observations, indexes, snapshots, caches, archives, and replay artifacts
   - how imports, replays, and derivations avoid resurrecting expunged content
   - how minimal tombstones or journal entries remain attributable without retaining recoverable content
-- **Dependencies**: Tasks 1.4, 1.9, 1.12, 1.16, and 1.17
+- **Dependencies**: Tasks 1.4, 1.9, 1.12, 1.17, and 1.18
 - **Acceptance Criteria**:
   - Forgetting behavior is explicit, inspectable, and distinct from correction or disclosure.
   - The system can explain what was removed, what was retained, and why.
 - **Validation**:
   - Invariant tests and architecture review.
 
-### Task 1.22: Define memory admission gate
+### Task 1.23: Define memory admission gate
 - **Location**: `src/continuity/admission.py`, `docs/architecture.md`, `tests/test_admission_model.py`
 - **Description**: Define the durable-memory admission model:
   - which admission outcomes exist in v1, such as `discard`, `session_ephemeral`, `prompt_only`, `needs_confirmation`, and `durable_claim`
@@ -1326,6 +1377,7 @@ It should not own the session / peer / claim domain model.
 - Execute a basic `ingest_turn` transaction end to end without retrieval.
 - Persist ontology types and policy metadata on observations, claims, and beliefs.
 - Persist admission decisions and durable-promotion outcomes for derived candidate memory.
+- Persist resolution-queue items and resolution actions.
 - Persist audience/disclosure policy metadata and effective disclosure decisions on claims, views, and turn artifacts.
 - Persist forgetting operations, erasure tombstones, and artifact-withdrawal metadata.
 - Persist policy versions on derived artifacts and turn decision records.
@@ -1358,6 +1410,8 @@ It should not own the session / peer / claim domain model.
   - replay_runs
   - policy_versions
   - admission_decisions
+  - resolution_queue_items
+  - resolution_actions
   - disclosure_policies
   - forgetting_operations
   - erasure_tombstones
@@ -1392,6 +1446,7 @@ It should not own the session / peer / claim domain model.
   - Outcome records can be attached to claims, views, and decisions explicitly.
   - Memory records can be typed and queried by ontology class.
   - Admission decisions are explicit and queryable without introducing a second durable memory primitive.
+  - Resolution-queue items are explicit and queryable.
   - Claim validity, subject, locus, scope, and relation metadata are explicit and queryable.
   - Forgetting operations and tombstones are explicit and queryable.
   - Beliefs, derivation runs, and turn artifacts can be traced to a concrete policy version.
@@ -1403,7 +1458,7 @@ It should not own the session / peer / claim domain model.
 
 ### Task 2.2: Implement repository layer
 - **Location**: `src/continuity/store/sqlite.py`, `tests/test_store.py`
-- **Description**: Build CRUD/query helpers for the schema, including subject and alias resolution primitives plus admission-decision, disclosure-policy, and forgetting-operation lookups.
+- **Description**: Build CRUD/query helpers for the schema, including subject and alias resolution primitives plus admission, resolution-queue, disclosure, and forgetting lookups.
 - **Dependencies**: Task 2.1
 - **Acceptance Criteria**:
   - Reads/writes are explicit and transactional.
@@ -1490,6 +1545,7 @@ It should not own the session / peer / claim domain model.
   - save resolved loci used for prompt assembly
   - save source compiled views used for prompt assembly or answers
   - save disclosure decisions and withheld/redacted fragments for prompt assembly or answers
+  - save queued follow-up items and later resolution links where applicable
   - save links to later forgetting operations that withdraw captured content
   - save active claims used for prompt assembly
   - save active beliefs used for prompt assembly
@@ -1608,6 +1664,20 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Repository round-trip and admission-budget tests.
 
+### Task 2.15: Implement resolution queue repository
+- **Location**: `src/continuity/resolution_queue.py`, `tests/test_resolution_queue_store.py`
+- **Description**: Persist and query unresolved-memory follow-up state:
+  - record queue items, priorities, and recommended actions
+  - record resolution outcomes and links back to claims, loci, turn artifacts, and outcomes
+  - support defer, batch, escalate, and resolve operations
+  - expose queries for top-priority follow-up opportunities by session, peer, or subject
+- **Dependencies**: Tasks 2.2, 2.4, 2.8, and 2.14
+- **Acceptance Criteria**:
+  - Resolution-queue state is durable, queryable, and attributable.
+  - Queue resolution can be audited independently from ordinary claim derivation.
+- **Validation**:
+  - Repository round-trip and priority-order tests.
+
 ## Sprint 3: Add Retrieval With zvec + Ollama
 
 **Goal**: Build local semantic retrieval and typed compiled-view assembly over claims and their compiled views.
@@ -1619,6 +1689,7 @@ It should not own the session / peer / claim domain model.
 - Enforce audience-aware disclosure rules during host-facing reads.
 - Enforce suppression, sealing, and expunge absence during host-facing reads.
 - Surface prompt-only and session-ephemeral admitted memory without forcing durable-claim writes.
+- Surface top-priority resolution-queue items when policy says clarification is worth spending prompt budget on.
 - Build a `prompt_view` under a hard token budget with deterministic degradation.
 - Retrieve relevant memory context for a query.
 - Register vector-index records as rebuildable compiled artifacts.
@@ -1662,6 +1733,7 @@ It should not own the session / peer / claim domain model.
   - budgeted prompt packing with deterministic fragment selection and degradation ladders
   - prompt-ready memory assembly
   - prompt-only and session-ephemeral memory inclusion rules
+  - memory-resolution-queue surfacing rules
   - evidence-aware ranking and citation selection
   - disclosure-policy filtering and transformation by viewer, channel, and purpose
   - forgetting-aware filtering so suppressed, sealed, or expunged memory does not resurface
@@ -1679,6 +1751,7 @@ It should not own the session / peer / claim domain model.
   - Retrieval compiles reads under explicit viewer, channel, and purpose context.
   - Search results and prompt memory can expose provenance when needed.
   - Prompt-only and session-ephemeral admitted memory can assist prompt assembly without polluting the durable claim ledger.
+  - High-value queue items can be surfaced as clarification opportunities without polluting durable memory.
   - Retrieval prefers active beliefs and well-supported current claims over stale historical claims by default.
   - Retrieval resolves each locus according to aggregation mode before prompt assembly.
   - Retrieval and prompt assembly can prioritize or suppress memory types based on context.
@@ -1772,6 +1845,7 @@ It should not own the session / peer / claim domain model.
   - Capture records the durability waterline reached before the host saw completion.
   - Capture records prompt packing decisions for `prompt_view` when applicable.
   - Capture records admission decisions for candidate memory when applicable.
+  - Capture records surfaced or deferred resolution-queue items when applicable.
   - Capture records disclosure decisions, redactions, and withheld fragments when applicable.
   - Capture respects later sealing and expunge operations according to the forgetting contract.
   - Capture can be linked to later outcome records.
@@ -1793,6 +1867,7 @@ It should not own the session / peer / claim domain model.
 - Warm next-turn memory context.
 - Withdraw forgotten memory from active and archival artifacts atomically.
 - Confirm durable-admission budgets and candidate-memory outcomes behave as expected.
+- Exercise resolution-queue creation, surfacing, and resolution behavior.
 - Import local memory files/history.
 - Exercise a host-facing integration API.
 
@@ -1889,11 +1964,14 @@ It should not own the session / peer / claim domain model.
   - answer memory question
   - forget memory
   - write conclusion
+  - list memory follow-ups
+  - resolve memory follow-up
   - import history
   - publish snapshot
   - resolve subject
   - inspect evidence for a claim or answer
   - inspect admission decisions
+  - inspect resolution-queue items and their status
   - inspect disclosure decisions for a view or answer
   - inspect forgetting operations and tombstones
   - inspect epistemic status
@@ -1913,6 +1991,7 @@ It should not own the session / peer / claim domain model.
   - Host mutating operations do not publish authoritative state except through the mutation arbiter.
   - Forget operations can require snapshot publication before returning when the host requests immediate withdrawal guarantees.
   - The API can explain why candidate memory was discarded, kept ephemeral, or promoted durably.
+  - The API can expose ranked follow-up opportunities and record their resolution.
   - The API can accept and inspect explicit downstream outcome signals.
 - **Validation**:
   - End-to-end integration tests.
@@ -1932,6 +2011,7 @@ It should not own the session / peer / claim domain model.
 - Tier-bounded retrieval and retention behavior are validated on real fixture turns.
 - Forgetting and expunge behavior are validated on real fixture turns without content resurrection.
 - Admission and write-budget behavior are validated on real fixture turns before durable promotion.
+- Resolution-queue creation and resolution behavior are validated on real fixture turns.
 
 ### Task 6.1: Add adapter conformance tests
 - **Location**: `tests/reasoning/test_adapter_contract.py`
@@ -1952,6 +2032,7 @@ It should not own the session / peer / claim domain model.
   - Replay output can be scored for disclosure safety and over-disclosure impact.
   - Replay can score against explicit downstream outcome records where available.
   - Replay can consume authoritative journal order when event-level reconstruction matters.
+  - Replay can score queue-resolution yield and clarification usefulness.
   - Replay respects forgetting contracts and never rehydrates expunged content into new host-visible outputs.
   - Replay can compare multiple policy versions on the same stored turns.
 - **Validation**:
@@ -2020,6 +2101,11 @@ It should not own the session / peer / claim domain model.
   - abstention instead of assertion when evidence is insufficient
   - clarification triggers under conflicted or low-confidence state
   - calibration scoring in replay fixtures
+- Add resolution-queue tests for:
+  - queue creation from `needs_confirmation`, `needs_followup`, `open_question`, and stale-on-use signals
+  - priority, defer, batch, escalate, and resolve behavior
+  - surfacing of high-value follow-up opportunities in prompt assembly
+  - resolution outcomes feeding admission, belief, and outcome updates
 - Add outcome-ledger tests for:
   - explicit `confirmed`, `corrected`, `contradicted`, `stale_on_use`, `user_accepted`, and `user_overrode` labels
   - attachment of outcomes to claims, views, and turn artifacts
@@ -2051,6 +2137,7 @@ It should not own the session / peer / claim domain model.
   - deterministic phase ordering for `ingest_turn`
   - `write_conclusion` transaction boundaries
   - `forget_memory` transaction boundaries
+  - resolution-queue creation and resolution boundaries
   - `import_history` transaction boundaries
   - `publish_snapshot` transaction behavior
   - `prefetch_next_turn` transaction triggering
@@ -2082,6 +2169,7 @@ It should not own the session / peer / claim domain model.
 - Add replay tests for:
   - deterministic turn artifact capture
   - admission-policy counterfactual replays
+  - resolution-queue counterfactual replays
   - subject-resolution capture on the same stored turns
   - locus-resolution capture on the same stored turns
   - retrieval-only counterfactual replays
@@ -2098,6 +2186,7 @@ It should not own the session / peer / claim domain model.
 - `zvec` should not become the source of truth. Treat it as rebuildable.
 - The claim ledger can sprawl if claim granularity is vague. Keep claim boundaries explicit and Hermes-driven.
 - The admission gate can become either too permissive or too strict. Lock its thresholds early and validate both missed-memory and memory-sprawl cases with fixtures.
+- `needs_confirmation` and `needs_followup` can become dead metadata if no explicit queue owns them. Lock resolution-loop semantics early and validate queue creation, surfacing, and closure with fixtures.
 - The locus model can either collapse distinct memories together or fragment one memory into too many slots. Lock locus-address semantics early and validate them with fixtures.
 - The subject graph can over-merge distinct entities or under-merge aliases for the same entity. Lock subject-resolution semantics early and validate them with migration and replay fixtures.
 - The Evidence Graph can become complex quickly if provenance rules are vague. Keep observation-to-subject, subject-to-claim, claim-to-locus, and locus-to-view edges explicit and minimal.
@@ -2137,24 +2226,25 @@ It should not own the session / peer / claim domain model.
 2. Lock the subject graph before claim-ledger and memory-locus semantics spread.
 3. Lock the observation-log, typed claim-ledger, and memory-locus model before belief revision and compiled views spread.
 4. Lock the memory-admission gate before claim derivation, belief revision, and long-lived write behavior spread.
-5. Lock the compiled view algebra before retrieval and host API behavior spread.
-6. Lock the disclosure/audience layer before retrieval, prompt assembly, and host-facing read behavior spread.
-7. Lock the forgetting/retraction/erasure contract before retrieval, replay, migration, and archival behavior spread.
-8. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
-9. Lock the epistemic-status layer before retrieval, prompt packing, and answer behavior spread.
-10. Lock the outcome ledger before replay scoring and policy tuning spread.
-11. Lock the memory transaction pipeline before async write, replay, snapshot publication, prefetch, and forget behavior spread.
-12. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
-13. Lock the system event journal before reconstruction, replay, forgetting, and debugging semantics spread.
-14. Lock the durability contract before async behavior and host completion semantics spread.
-15. Lock the typed memory ontology before retrieval and derivation policies spread.
-16. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
-17. Lock the compiler dependency model after subject, admission, locus, disclosure, and forgetting rules are explicit and before downstream compiled views spread across the system.
-18. Lock the snapshot consistency model before prefetch, forgetting, and host-facing read contracts spread.
-19. Lock the generational tiering model before retrieval, retention, and expunge defaults spread.
-20. Add Ollama embeddings and `zvec` retrieval next.
-21. Add Codex adapter after retrieval.
-22. Add turn artifact capture as part of the first end-to-end reasoning path.
-23. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-24. Add prefetch and migration after core retrieval/reasoning work.
-25. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+5. Lock the epistemic-status layer before unresolved-memory outputs spread.
+6. Lock the memory resolution queue before host-facing clarification and follow-up behavior spread.
+7. Lock the compiled view algebra before retrieval and host API behavior spread.
+8. Lock the disclosure/audience layer before retrieval, prompt assembly, and host-facing read behavior spread.
+9. Lock the forgetting/retraction/erasure contract before retrieval, replay, migration, and archival behavior spread.
+10. Lock the budgeted prompt planner before prompt assembly and prompting logic spread.
+11. Lock the outcome ledger before replay scoring and policy tuning spread.
+12. Lock the memory transaction pipeline before async write, replay, snapshot publication, prefetch, forget, and follow-up behavior spread.
+13. Lock the mutation arbiter before concurrent publication, snapshot promotion, and waterline signaling spread.
+14. Lock the system event journal before reconstruction, replay, forgetting, resolution, and debugging semantics spread.
+15. Lock the durability contract before async behavior and host completion semantics spread.
+16. Lock the typed memory ontology before retrieval and derivation policies spread.
+17. Lock the first policy pack, `hermes_v1`, before retrieval and prompting logic spread.
+18. Lock the compiler dependency model after subject, admission, locus, disclosure, forgetting, and resolution rules are explicit and before downstream compiled views spread across the system.
+19. Lock the snapshot consistency model before prefetch, forgetting, resolution, and host-facing read contracts spread.
+20. Lock the generational tiering model before retrieval, retention, and expunge defaults spread.
+21. Add Ollama embeddings and `zvec` retrieval next.
+22. Add Codex adapter after retrieval.
+23. Add turn artifact capture as part of the first end-to-end reasoning path.
+24. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+25. Add prefetch and migration after core retrieval/reasoning work.
+26. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
