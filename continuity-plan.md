@@ -28,6 +28,10 @@ The implementation target is not "clone Honcho internally." It is:
 
 The project should be usable as a standalone local memory backend for Hermes and later adaptable to other agent runtimes.
 
+It should be built as one engine with two deployment modes:
+- `embedded`: the v1 default, running in-process inside Hermes
+- `daemon`: a later local-only wrapper over the same engine and API contracts, without semantic drift
+
 The most important architectural rule is that memory must be auditable. Every durable claim, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
 
 The second core rule is that memory must have one canonical intermediate representation. Raw observations are immutable inputs. Typed claims are the only durable derived primitive. Beliefs, profiles, summaries, prompt blocks, vector documents, and other host-facing outputs are compiled views over claims rather than co-equal durable roots.
@@ -76,6 +80,8 @@ The twenty-third core rule is that prompt assembly must be budgeted and explaina
 
 The twenty-fourth core rule is that memory must be tiered generationally. Continuity should separate hot, warm, cold, and frozen memory so retrieval quality, rebuild cost, storage growth, and prompt efficiency stay bounded over long runtimes.
 
+The twenty-fifth core rule is that deployment mode must not change semantics. Embedded and daemon execution should share the same transaction entrypoints, durability waterlines, snapshots, disclosure decisions, and typed API contracts, differing only in transport and lifecycle ownership.
+
 ## Design Direction
 
 ### Core Architecture
@@ -104,6 +110,7 @@ Use a split architecture:
 - a `Memory Transaction Pipeline` that defines deterministic runtime phase ordering for ingest, derivation, compilation, publication, and prefetch
 - a `Durability Contract` that defines which commit waterline each transaction and API guarantees
 - a `Mutation Arbiter` that serializes authoritative state transitions and snapshot-head publication
+- a transport-neutral `Continuity Service Facade` that exposes the same typed request/response contract in embedded and daemon modes
 - a `System Event Journal` that records authoritative published state transitions in append-only order
 - a `Memory Resolution Queue` that turns unresolved memory states into ranked follow-up opportunities and durable resolution actions
 - an `Outcome Ledger` that records post-hoc confirmations, corrections, overrides, and downstream usefulness
@@ -146,6 +153,27 @@ This is the right fit because Hermes needs more than vectors:
 These belong in `SQLite`.
 
 `zvec` should be treated as the retrieval index, not the canonical store. If the index becomes stale, it should be rebuildable from SQLite.
+
+### Deployment Modes
+
+Continuity should be designed as one engine with two shells, not as two implementations.
+
+The initial deployment modes should be:
+- `embedded`: the engine is imported and called directly inside Hermes
+- `daemon`: the same engine is wrapped by a local long-lived process and reached through a thin transport adapter
+
+This layer should define:
+- one canonical typed request/response contract for host operations, independent of transport
+- one canonical transaction, durability, snapshot, and replay semantics model shared by both modes
+- a clear boundary between engine code and transport/process-lifecycle code
+- local-only daemon assumptions for v2, with Unix domain sockets preferred before HTTP or hosted deployment
+- SQLite ownership and locking rules so embedded mode and daemon mode do not accidentally assume incompatible concurrency models
+
+This is how to have it both ways without architectural drift:
+- Hermes can start with zero IPC overhead in embedded mode
+- daemon mode can be added later without rewriting business logic
+- parity tests can run against one engine contract instead of two stacks
+- future process isolation does not require rethinking claims, snapshots, or waterlines
 
 ### Canonical Memory IR
 
@@ -926,6 +954,7 @@ It should not own the session / peer / claim domain model.
 - Local reasoning through Codex SDK
 - Local embeddings through Ollama
 - Semantic search through `zvec`
+- Embedded in-process operation for Hermes in v1, with a daemon-compatible engine boundary for later local deployment
 - File/history migration and AI identity seeding
 - Explicit admission of candidate memory into `discard`, `session_ephemeral`, `prompt_only`, `needs_confirmation`, or durable-claim outcomes
 - Explicit forgetting, suppression, sealing, and expunge behavior for stored and imported memory
@@ -952,6 +981,7 @@ It should not own the session / peer / claim domain model.
 - Reproducing Honcho's full server/API architecture
 - Reproducing Honcho's exact database schema
 - Multi-tenant hosted deployment concerns
+- A networked or hosted memory daemon in v1
 - Recreating every Honcho endpoint or SDK shape
 - A broad multi-provider abstraction beyond the minimal reasoning adapter interface
 
@@ -971,6 +1001,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/compiler.py`
 - `src/continuity/transactions.py`
 - `src/continuity/arbiter.py`
+- `src/continuity/service.py`
 - `src/continuity/events.py`
 - `src/continuity/resolution_queue.py`
 - `src/continuity/views.py`
@@ -989,6 +1020,7 @@ It should not own the session / peer / claim domain model.
 - `src/continuity/prefetch.py`
 - `src/continuity/migration.py`
 - `src/continuity/api.py`
+- `src/continuity/daemon.py`
 - `src/continuity/evals/replay_runner.py`
 - `tests/`
 - `docs/architecture.md`
@@ -1013,6 +1045,8 @@ It should not own the session / peer / claim domain model.
   - an internal Hermes patch
   - an MCP wrapper
   - or both
+- Treat `embedded` mode as the first deployment target.
+- Keep the host API transport-neutral so a later local daemon wrapper can reuse the same engine contract.
 
 ## Sprint 1: Define Continuity Contracts
 
@@ -1042,6 +1076,7 @@ It should not own the session / peer / claim domain model.
 - Define compiler dependency and invalidation invariants.
 - Define snapshot consistency and promotion invariants.
 - Define generational tiering and retention invariants.
+- Define embedded-vs-daemon deployment boundary invariants.
 - Run unit tests for config/session-name normalization.
 
 ### Task 1.1: Document Hermes-visible parity targets
@@ -1437,6 +1472,22 @@ It should not own the session / peer / claim domain model.
 - **Acceptance Criteria**:
   - The system can explain why a candidate memory was discarded, kept ephemeral, deferred, or promoted.
   - Durable claims enter the ledger only after explicit admission.
+- **Validation**:
+  - Invariant tests and architecture review.
+
+### Task 1.25: Define deployment modes and process boundary
+- **Location**: `src/continuity/service.py`, `src/continuity/api.py`, `docs/architecture.md`, `tests/test_runtime_mode_contract.py`
+- **Description**: Define how Continuity runs embedded first and daemonized later without semantic drift:
+  - which deployment modes exist in v1 and later, starting with `embedded` and reserving `daemon`
+  - which request/response contracts are canonical and transport-neutral
+  - which runtime responsibilities belong to the engine versus the host or daemon shell
+  - how transaction entrypoints, durability waterlines, snapshots, and replay artifacts remain identical across modes
+  - how local daemon transport should work when added later, preferring Unix domain sockets and explicitly avoiding hosted-service assumptions
+  - how SQLite ownership, locking, and lifecycle differ between embedded and daemon execution without changing semantics
+- **Dependencies**: Tasks 1.10, 1.11, 1.12, and 1.13
+- **Acceptance Criteria**:
+  - The plan can support in-process execution now and a local daemon later without bifurcating behavior.
+  - Transport and process lifecycle concerns are explicit and kept out of the core engine contract.
 - **Validation**:
   - Invariant tests and architecture review.
 
@@ -2063,7 +2114,7 @@ It should not own the session / peer / claim domain model.
   - Fixture-based migration tests.
 
 ### Task 5.6: Expose a minimal host API
-- **Location**: `src/continuity/api.py`, `tests/test_api.py`
+- **Location**: `src/continuity/api.py`, `src/continuity/service.py`, `tests/test_api.py`
 - **Description**: Expose only the host-needed surface:
   - initialize
   - save turn
@@ -2097,6 +2148,7 @@ It should not own the session / peer / claim domain model.
 - **Dependencies**: Tasks 5.4 and 5.5
 - **Acceptance Criteria**:
   - A host runtime does not need internal store/index details and can request named compiled views explicitly.
+  - The typed API contract is transport-neutral and can be invoked directly in-process or wrapped by a later local daemon transport.
   - Host-facing reads compile under explicit viewer, channel, purpose, and disclosure policy context.
   - Host mutating operations map to explicit transaction entrypoints.
   - Host mutating operations document the durability waterline they guarantee before returning.
@@ -2126,6 +2178,7 @@ It should not own the session / peer / claim domain model.
 - Admission and write-budget behavior are validated on real fixture turns before durable promotion.
 - Resolution-queue creation and resolution behavior are validated on real fixture turns.
 - Utility-driven ranking, prompting, and retention behavior are validated on real fixture turns.
+- Embedded-mode and daemon-mode contract equivalence is defined and testable.
 
 ### Task 6.1: Add adapter conformance tests
 - **Location**: `tests/reasoning/test_adapter_contract.py`
@@ -2153,12 +2206,13 @@ It should not own the session / peer / claim domain model.
 - **Validation**:
   - Fixture evaluations on stored turn artifacts.
 
-### Task 6.3: Document future adapter integration
+### Task 6.3: Document future adapter and deployment integration
 - **Location**: `docs/architecture.md`
-- **Description**: Document how Claude Agent SDK and OpenCode SDK can be added later.
+- **Description**: Document how future adapters and deployment shells can be added later.
 - **Dependencies**: Tasks 6.1 and 6.2
 - **Acceptance Criteria**:
   - The extension story is clear without changing the core interface.
+  - A local daemon shell can be added later without changing engine semantics or the typed API contract.
 - **Validation**:
   - Manual review.
 
@@ -2279,6 +2333,10 @@ It should not own the session / peer / claim domain model.
   - `write_conclusion` minimum commit guarantee
   - `publish_snapshot` as the required boundary for prompt-visible reads
   - prefetch exclusion from mutating-operation completion by default
+- Add deployment-mode contract tests for:
+  - identical request/response semantics in embedded mode and a future daemon wrapper
+  - no transport-specific or Python-object leakage across the canonical API boundary
+  - identical transaction, waterline, and snapshot guarantees across deployment modes
 - Add snapshot tests for:
   - coherent reads during background rebuild
   - candidate snapshot promotion
@@ -2336,6 +2394,7 @@ It should not own the session / peer / claim domain model.
 - Codex SDK behavior may differ from Claude/OpenCode later. Keep the adapter interface narrow.
 - Structured-output reliability needs explicit validation and retry strategy.
 - Async prefetch should never become a hidden source of stale state.
+- Embedded and daemon modes can drift if the API boundary leaks Python internals or if one mode gains in-process shortcuts the other cannot honor. Keep one transport-neutral service contract and test both modes against it.
 - Migration and AI identity seeding should remain explicit flows, not implicit magic.
 - If Hermes integration starts by mimicking Honcho tool names, keep those aliases at the boundary, not in the core model.
 
@@ -2369,9 +2428,10 @@ It should not own the session / peer / claim domain model.
 19. Lock the compiler dependency model after subject, admission, locus, disclosure, forgetting, resolution, and utility rules are explicit and before downstream compiled views spread across the system.
 20. Lock the snapshot consistency model before prefetch, forgetting, resolution, and host-facing read contracts spread.
 21. Lock the generational tiering model before retrieval, retention, expunge, and utility-driven promotion defaults spread.
-22. Add Ollama embeddings and `zvec` retrieval next.
-23. Add Codex adapter after retrieval.
-24. Add turn artifact capture as part of the first end-to-end reasoning path.
-25. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
-26. Add prefetch and migration after core retrieval/reasoning work.
-27. Harden replay and adapter contracts last so Claude/OpenCode can be added later.
+22. Lock the embedded-first / daemon-later deployment boundary before host integration cements in-process-only assumptions.
+23. Add Ollama embeddings and `zvec` retrieval next.
+24. Add Codex adapter after retrieval.
+25. Add turn artifact capture as part of the first end-to-end reasoning path.
+26. Add incremental rebuild, snapshot promotion, and tier transition runtime before prefetch and host integration.
+27. Add prefetch and migration after core retrieval/reasoning work.
+28. Harden replay, deployment, and adapter contracts last so daemon mode and Claude/OpenCode can be added later.
