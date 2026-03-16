@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+from typing import Iterable
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -91,6 +95,12 @@ _CATEGORY_KINDS: dict[CompilerNodeCategory, tuple[type[StrEnum], ...]] = {
     CompilerNodeCategory.DERIVED_IR: (DerivedArtifactKind,),
     CompilerNodeCategory.UTILITY_STATE: (UtilityStateKind,),
     CompilerNodeCategory.COMPILED_ARTIFACT: (CompiledArtifactKind,),
+}
+_CATEGORY_KIND_ENUMS: dict[CompilerNodeCategory, type[StrEnum]] = {
+    CompilerNodeCategory.SOURCE_INPUT: SourceInputKind,
+    CompilerNodeCategory.DERIVED_IR: DerivedArtifactKind,
+    CompilerNodeCategory.UTILITY_STATE: UtilityStateKind,
+    CompilerNodeCategory.COMPILED_ARTIFACT: CompiledArtifactKind,
 }
 
 
@@ -276,6 +286,12 @@ class DirtyNode:
         return tuple(dict.fromkeys(cause.dependency_path for cause in self.causes))
 
 
+class DirtyQueueStatus(StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+
+
 @dataclass(frozen=True, slots=True)
 class RebuildPlan:
     changes: tuple[CompilerChange, ...]
@@ -290,6 +306,378 @@ class RebuildPlan:
             if dirty_node.node_id == cleaned_node_id:
                 return dirty_node
         raise KeyError(cleaned_node_id)
+
+
+def _validate_timestamp(value: datetime, *, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value
+
+
+def _kind_from_storage(*, category: CompilerNodeCategory, raw_kind: str) -> StrEnum:
+    enum_type = _CATEGORY_KIND_ENUMS[category]
+    return enum_type(raw_kind)
+
+
+def _json_dumps(value: object) -> str:
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+class CompilerStateRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def upsert_nodes(self, nodes: Iterable[CompilerNode]) -> None:
+        rows = tuple(nodes)
+        if not rows:
+            return
+
+        with self._connection:
+            self._connection.executemany(
+                """
+                INSERT INTO compiler_nodes(node_id, category, kind, fingerprint, subject_id, locus_key)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(node_id) DO UPDATE SET
+                    category = excluded.category,
+                    kind = excluded.kind,
+                    fingerprint = excluded.fingerprint,
+                    subject_id = excluded.subject_id,
+                    locus_key = excluded.locus_key
+                """,
+                (
+                    (
+                        node.node_id,
+                        node.category.value,
+                        node.kind.value,
+                        node.fingerprint,
+                        node.subject_id,
+                        node.locus_key,
+                    )
+                    for node in rows
+                ),
+            )
+
+    def list_nodes(
+        self,
+        *,
+        subject_id: str | None = None,
+        locus_key: str | None = None,
+    ) -> tuple[CompilerNode, ...]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if subject_id is not None:
+            clauses.append("subject_id = ?")
+            parameters.append(_clean_text(subject_id, field_name="subject_id"))
+        if locus_key is not None:
+            clauses.append("locus_key = ?")
+            parameters.append(_clean_text(locus_key, field_name="locus_key"))
+
+        sql = """
+            SELECT node_id, category, kind, fingerprint, subject_id, locus_key
+            FROM compiler_nodes
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY rowid"
+
+        rows = self._connection.execute(sql, parameters).fetchall()
+        return tuple(
+            CompilerNode(
+                node_id=row[0],
+                category=CompilerNodeCategory(row[1]),
+                kind=_kind_from_storage(
+                    category=CompilerNodeCategory(row[1]),
+                    raw_kind=row[2],
+                ),
+                fingerprint=row[3],
+                subject_id=row[4],
+                locus_key=row[5],
+            )
+            for row in rows
+        )
+
+    def replace_dependencies(self, dependencies: Iterable[CompilerDependency]) -> None:
+        rows = tuple(dependencies)
+        with self._connection:
+            self._connection.execute("DELETE FROM compiler_dependencies")
+            if rows:
+                self._connection.executemany(
+                    """
+                    INSERT INTO compiler_dependencies(upstream_node_id, downstream_node_id, role)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        (
+                            dependency.upstream_node_id,
+                            dependency.downstream_node_id,
+                            dependency.role.value,
+                        )
+                        for dependency in rows
+                    ),
+                )
+
+    def list_dependencies(
+        self,
+        *,
+        upstream_node_id: str | None = None,
+        downstream_node_id: str | None = None,
+        role: DependencyRole | None = None,
+    ) -> tuple[CompilerDependency, ...]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if upstream_node_id is not None:
+            clauses.append("upstream_node_id = ?")
+            parameters.append(_clean_text(upstream_node_id, field_name="upstream_node_id"))
+        if downstream_node_id is not None:
+            clauses.append("downstream_node_id = ?")
+            parameters.append(_clean_text(downstream_node_id, field_name="downstream_node_id"))
+        if role is not None:
+            clauses.append("role = ?")
+            parameters.append(role.value)
+
+        sql = """
+            SELECT upstream_node_id, downstream_node_id, role
+            FROM compiler_dependencies
+        """
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY rowid"
+
+        rows = self._connection.execute(sql, parameters).fetchall()
+        return tuple(
+            CompilerDependency(
+                upstream_node_id=row[0],
+                downstream_node_id=row[1],
+                role=DependencyRole(row[2]),
+            )
+            for row in rows
+        )
+
+    def enqueue_dirty_nodes(
+        self,
+        dirty_nodes: Iterable[DirtyNode],
+        *,
+        queued_at: datetime,
+        status: DirtyQueueStatus = DirtyQueueStatus.PENDING,
+    ) -> None:
+        queue_time = _validate_timestamp(queued_at, field_name="queued_at").isoformat()
+        rows = tuple(dirty_nodes)
+        if not rows:
+            return
+
+        with self._connection:
+            self._connection.executemany(
+                """
+                INSERT INTO compiler_dirty_queue(
+                    node_id,
+                    reason,
+                    subject_id,
+                    locus_key,
+                    causes_json,
+                    status,
+                    queued_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        dirty_node.node_id,
+                        dirty_node.reasons[0].value,
+                        dirty_node.subject_id,
+                        dirty_node.locus_key,
+                        _json_dumps(
+                            [
+                                {
+                                    "reason": cause.reason.value,
+                                    "changed_node_id": cause.changed_node_id,
+                                    "changed_node_kind": cause.changed_node_kind,
+                                    "dependency_path": list(cause.dependency_path),
+                                }
+                                for cause in dirty_node.causes
+                            ]
+                        ),
+                        status.value,
+                        queue_time,
+                    )
+                    for dirty_node in rows
+                ),
+            )
+
+    def list_dirty_nodes(
+        self,
+        *,
+        status: DirtyQueueStatus = DirtyQueueStatus.PENDING,
+        subject_id: str | None = None,
+        locus_key: str | None = None,
+    ) -> tuple[DirtyNode, ...]:
+        clauses = ["queue.status = ?"]
+        parameters: list[str] = [status.value]
+        if subject_id is not None:
+            clauses.append("queue.subject_id = ?")
+            parameters.append(_clean_text(subject_id, field_name="subject_id"))
+        if locus_key is not None:
+            clauses.append("queue.locus_key = ?")
+            parameters.append(_clean_text(locus_key, field_name="locus_key"))
+
+        sql = f"""
+            SELECT
+                queue.queue_id,
+                queue.node_id,
+                queue.reason,
+                queue.subject_id,
+                queue.locus_key,
+                queue.causes_json,
+                node.category,
+                node.kind
+            FROM compiler_dirty_queue AS queue
+            JOIN compiler_nodes AS node ON node.node_id = queue.node_id
+            WHERE {" AND ".join(clauses)}
+            ORDER BY queue.queue_id
+        """
+        rows = self._connection.execute(sql, parameters).fetchall()
+
+        node_state: dict[str, tuple[CompilerNodeCategory, StrEnum, str | None, str | None]] = {}
+        causes_by_node_id: dict[str, set[DirtyCause]] = defaultdict(set)
+        ordered_node_ids: list[str] = []
+
+        for row in rows:
+            node_id = row[1]
+            if node_id not in node_state:
+                ordered_node_ids.append(node_id)
+                category = CompilerNodeCategory(row[6])
+                node_state[node_id] = (
+                    category,
+                    _kind_from_storage(category=category, raw_kind=row[7]),
+                    row[3],
+                    row[4],
+                )
+
+            causes_by_node_id[node_id].update(
+                self._load_dirty_causes(raw_json=row[5], fallback_reason=DirtyReason(row[2]))
+            )
+
+        return tuple(
+            DirtyNode(
+                node_id=node_id,
+                category=node_state[node_id][0],
+                kind=node_state[node_id][1],
+                subject_id=node_state[node_id][2],
+                locus_key=node_state[node_id][3],
+                causes=tuple(causes_by_node_id[node_id]),
+            )
+            for node_id in ordered_node_ids
+        )
+
+    def list_affected_subject_ids(
+        self,
+        *,
+        status: DirtyQueueStatus = DirtyQueueStatus.PENDING,
+    ) -> tuple[str, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT DISTINCT subject_id
+            FROM compiler_dirty_queue
+            WHERE status = ? AND subject_id IS NOT NULL
+            ORDER BY subject_id
+            """,
+            (status.value,),
+        ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def list_affected_locus_keys(
+        self,
+        *,
+        subject_id: str,
+        status: DirtyQueueStatus = DirtyQueueStatus.PENDING,
+    ) -> tuple[str, ...]:
+        rows = self._connection.execute(
+            """
+            SELECT DISTINCT locus_key
+            FROM compiler_dirty_queue
+            WHERE status = ? AND subject_id = ? AND locus_key IS NOT NULL
+            ORDER BY locus_key
+            """,
+            (status.value, _clean_text(subject_id, field_name="subject_id")),
+        ).fetchall()
+        return tuple(row[0] for row in rows)
+
+    def read_rebuild_plan(
+        self,
+        *,
+        status: DirtyQueueStatus = DirtyQueueStatus.PENDING,
+        subject_id: str | None = None,
+        locus_key: str | None = None,
+    ) -> RebuildPlan:
+        dirty_nodes = self.list_dirty_nodes(status=status, subject_id=subject_id, locus_key=locus_key)
+        rebuild_order = _deterministic_topological_order(
+            dirty_nodes=dirty_nodes,
+            dependencies=self.list_dependencies(),
+        )
+        return RebuildPlan(
+            changes=(),
+            dirty_nodes=dirty_nodes,
+            rebuild_order=rebuild_order,
+            affected_subject_ids=tuple(
+                sorted(
+                    {
+                        dirty_node.subject_id
+                        for dirty_node in dirty_nodes
+                        if dirty_node.subject_id is not None
+                    }
+                )
+            ),
+            affected_locus_keys=tuple(
+                sorted(
+                    {
+                        dirty_node.locus_key
+                        for dirty_node in dirty_nodes
+                        if dirty_node.locus_key is not None
+                    }
+                )
+            ),
+        )
+
+    def _load_dirty_causes(
+        self,
+        *,
+        raw_json: str,
+        fallback_reason: DirtyReason,
+    ) -> tuple[DirtyCause, ...]:
+        payload = json.loads(raw_json)
+        causes: list[DirtyCause] = []
+        for item in payload:
+            changed_node_id = _clean_text(item["changed_node_id"], field_name="changed_node_id")
+            dependency_path = tuple(
+                _clean_text(node_id, field_name="dependency_path")
+                for node_id in item["dependency_path"]
+            )
+            changed_node_kind = item.get("changed_node_kind") or self._node_kind_value(changed_node_id)
+            reason_value = item.get("reason", fallback_reason.value)
+            causes.append(
+                DirtyCause(
+                    reason=DirtyReason(reason_value),
+                    changed_node_id=changed_node_id,
+                    changed_node_kind=_clean_text(
+                        changed_node_kind,
+                        field_name="changed_node_kind",
+                    ),
+                    dependency_path=dependency_path,
+                )
+            )
+        return tuple(causes)
+
+    def _node_kind_value(self, node_id: str) -> str:
+        row = self._connection.execute(
+            """
+            SELECT kind
+            FROM compiler_nodes
+            WHERE node_id = ?
+            """,
+            (_clean_text(node_id, field_name="node_id"),),
+        ).fetchone()
+        if row is None:
+            raise KeyError(node_id)
+        return row[0]
 
 
 def _index_nodes(nodes: tuple[CompilerNode, ...] | list[CompilerNode]) -> dict[str, CompilerNode]:
@@ -492,10 +880,12 @@ __all__ = [
     "CompilerDependency",
     "CompilerNode",
     "CompilerNodeCategory",
+    "CompilerStateRepository",
     "DependencyRole",
     "DerivedArtifactKind",
     "DirtyCause",
     "DirtyNode",
+    "DirtyQueueStatus",
     "DirtyReason",
     "RebuildPlan",
     "SourceInputKind",
