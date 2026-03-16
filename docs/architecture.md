@@ -373,6 +373,48 @@ outcomes or epistemic status. They give admission, prompting, resolution,
 retention, and replay one inspectable value model while keeping policy order
 primary and using utility only where the policy pack explicitly allows it.
 
+## Incremental Memory Compiler
+
+The incremental memory compiler makes recompilation explicit instead of hiding
+it behind scans or opportunistic cache refreshes. The compiler tracks
+fingerprints for four separate categories of nodes:
+
+- `source_input` nodes such as observations, imported artifacts, admission
+  rules, policy packs, adapter versions, and other upstream inputs
+- `derived_ir` nodes such as canonical subjects, claims, loci, and claim
+  relations
+- `utility_state` nodes such as compiled utility weights that may reprioritize
+  prompt assembly, queue order, retention, or rebuild urgency
+- `compiled_artifact` nodes such as `state_view`, `timeline_view`,
+  `set_view`, `profile_view`, `prompt_view`, `evidence_view`, `answer_view`,
+  and `vector_index_record`
+
+The separation matters. Source inputs are authoritative upstream causes.
+Derived IR remains the canonical intermediate representation. Utility state is
+tracked independently so `utility_input_changed` can invalidate only the views
+or indexes that actually depend on utility. Compiled artifacts remain
+downstream outputs rather than a second durable root.
+
+Dependency edges are explicit and typed. Content, projection, membership,
+policy, utility, provenance, and index edges all remain inspectable so the
+compiler can answer why a node is dirty and which path caused the rebuild.
+Dirty reasons stay explicit rather than inferred from broad scans. The v1
+reason set includes `source_edited`, `admission_policy_changed`,
+`claim_corrected`, `subject_identity_changed`, `locus_membership_changed`,
+`forgetting_changed`, `resolution_changed`, `utility_input_changed`,
+`policy_upgraded`, and `adapter_changed`.
+
+When a fingerprint changes, the compiler must:
+
+- mark only the affected downstream nodes dirty
+- preserve the dependency path that explains each dirty node
+- keep rebuild planning deterministic and subject- plus locus-scoped
+- rebuild in dependency order instead of broad invalidation waves
+
+That gives Continuity an inspectable answer to questions like "why did this
+prompt change?", "which locus was affected?", and "did this policy_upgraded
+event require a full rebuild or only prompt-facing views?"
+
 ## Replay Artifacts
 
 Continuity keeps one canonical replay artifact format for counterfactual replay.
