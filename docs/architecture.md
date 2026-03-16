@@ -109,6 +109,58 @@ Answer and prompt behavior follows the status:
 conflicted, or needs-confirmation state by default. Replay should be able to
 inspect whether the engine qualified, abstained, or over-asserted.
 
+## Typed Memory Ontology
+
+Continuity keeps a typed memory ontology that stays small, explicit, and
+Hermes-driven. The v1 memory classes are:
+
+- `preference`
+- `biography`
+- `relationship`
+- `task_state`
+- `project_fact`
+- `instruction`
+- `commitment`
+- `open_question`
+- `ephemeral_context`
+- `assistant_self_model`
+
+Each memory class owns one host-visible contract surface:
+
+- which subject kinds and applicability scopes it may attach to
+- which evidence sources may produce the claim
+- which locus prefix and aggregation mode it belongs to
+- which admission outcome it defaults to before any durable publication
+- whether it may later promote into durable belief
+- which decay mode applies over time
+- which prompt rendering style the host should use
+
+This keeps user memory, shared context, assistant memory, and ephemeral state
+explicitly partitioned. `preference` and `biography` stay in user memory,
+`task_state` and `project_fact` stay in shared context, `assistant_self_model`
+stays partitioned in assistant memory, and `ephemeral_context` remains
+prompt-only session state by default.
+
+## Versioned Policy Packs
+
+Continuity also keeps versioned policy packs so memory behavior is explained by
+policy version instead of hidden defaults. The first policy pack is
+`hermes_v1`.
+
+Each policy pack stamps a concrete policy version on host-facing decisions and
+owns:
+
+- the active ontology and enabled memory classes
+- admission defaults and write budgets by memory partition
+- retrieval ordering and prompt rendering rules
+- utility weights for ranking and later replay analysis
+- a replay-comparable policy fingerprint for policy version comparisons
+
+That makes prompt rendering, utility weighting, admission choices, and replay
+inspection transport-neutral and inspectable. A host can say which policy
+version produced a memory decision instead of reverse-engineering behavior from
+scattered module defaults.
+
 ## Host-Visible Artifacts
 
 No durable derived memory artifact exists outside the claim ledger. Host-visible
