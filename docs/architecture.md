@@ -450,3 +450,105 @@ Prompt exposure remains status-aware:
 
 This keeps prompt packing bounded, explainable, and replayable under one
 inspectable contract.
+
+## Memory Transaction Pipeline
+
+Continuity treats runtime behavior as a closed set of named transactions rather
+than ad hoc helper calls. The v1 transaction set is:
+
+- `ingest_turn`
+- `write_conclusion`
+- `forget_memory`
+- `import_history`
+- `compile_views`
+- `publish_snapshot`
+- `prefetch_next_turn`
+
+Each transaction keeps one deterministic phase order even when the caller only
+waits for an earlier waterline. The canonical phase vocabulary is:
+
+- normalize observations
+- commit observations
+- resolve subjects
+- derive candidates
+- run admission
+- record non-durable context
+- assign loci
+- commit claims
+- resolve forgetting
+- revise beliefs
+- compile views
+- refresh utility
+- capture replay
+- publish snapshot
+- prefetch
+
+The main transaction boundaries stay explicit:
+
+- `ingest_turn` runs the full turn pipeline from normalize observations through
+  prefetch, with admission deciding whether candidate memory becomes durable,
+  remains prompt-only, or stays session-ephemeral.
+- `write_conclusion` records an explicit host write, then continues through
+  claim commit, view compilation, snapshot publication, and optional next-turn
+  prefetch.
+- `forget_memory` resolves the requested forgetting mode first, then applies
+  durable visibility changes, recompiles affected views, captures replay, and
+  publishes a replacement snapshot.
+- `import_history` follows the same canonical ingest spine without inventing a
+  migration-only write path.
+- `compile_views` and `publish_snapshot` stay available as explicit runtime
+  entrypoints instead of side effects hidden inside reads.
+- `prefetch_next_turn` is its own transaction path so the engine can warm
+  prompt-facing caches without redefining the completion contract of a mutating
+  operation.
+
+`writeFrequency` is therefore a timing policy over the `ingest_turn`
+transaction, not a second write implementation. `async` runs every turn and may
+return at `observation_committed`, `turn` waits through `snapshot_published`,
+`session` defers the full flush to session end, and integer `N` means the same
+transaction is batched on a turn threshold instead of inventing a new runtime
+path.
+
+## Durability Contract
+
+Continuity expresses completion semantics through a small ordered waterline set:
+
+- `observation_committed`
+- `claim_committed`
+- `views_compiled`
+- `snapshot_published`
+- `prefetch_warmed`
+
+These waterlines mean:
+
+- `observation_committed`: source observations and transaction metadata are
+  durably stored.
+- `claim_committed`: durable claim writes, locus assignment, and belief-side
+  effects are durably stored.
+- `views_compiled`: the required compiled views for the operation have been
+  rebuilt.
+- `snapshot_published`: the host-visible snapshot head for the operation is
+  published.
+- `prefetch_warmed`: next-turn caches pinned to the active snapshot are ready.
+
+Host-facing operations stay explicit about the minimum waterline they require:
+
+- `save_turn` depends on `writeFrequency`: `async` awaits
+  `observation_committed`, `turn` awaits `snapshot_published`, `session`
+  returns after `observation_committed` while the full publish waits for the
+  session flush, and integer batching returns after `observation_committed`
+  until the threshold turn flushes.
+- `write_conclusion` and `import_history` require at least `views_compiled` so
+  durable writes do not return before the affected compiled views exist.
+- `forget_memory` uses mode-specific guarantees: `supersede` requires
+  `views_compiled`, while `suppress`, `seal`, and `expunge` require
+  `snapshot_published` so withdrawn material is absent from subsequent host
+  reads.
+- prompt-facing reads require `snapshot_published`.
+- `prefetch_next_turn` is best-effort relative to mutating operations and only
+  defines `prefetch_warmed` when the caller explicitly invokes the prefetch
+  transaction itself.
+
+This keeps async behavior precise: callers know which waterline was awaited,
+which phases may still be running after return, and which guarantees remain the
+same for embedded mode now and a daemon wrapper later.
