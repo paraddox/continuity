@@ -32,6 +32,8 @@ It should be built as one engine with two deployment modes:
 - `embedded`: the v1 default, running in-process inside Hermes
 - `daemon`: a later local-only wrapper over the same engine and API contracts, without semantic drift
 
+This document is intentionally comprehensive. Sequencing and priority can be tightened later when it is converted into beads epics, but the architecture here should cover the whole intended system.
+
 The most important architectural rule is that memory must be auditable. Every durable claim, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
 
 The second core rule is that memory must have one canonical intermediate representation. Raw observations are immutable inputs. Typed claims are the only durable derived primitive. Beliefs, profiles, summaries, prompt blocks, vector documents, and other host-facing outputs are compiled views over claims rather than co-equal durable roots.
@@ -981,6 +983,7 @@ It should not own the session / peer / claim domain model.
 - Reproducing Honcho's full server/API architecture
 - Reproducing Honcho's exact database schema
 - Multi-tenant hosted deployment concerns
+- An MCP wrapper as the primary v1 consumer
 - A networked or hosted memory daemon in v1
 - Recreating every Honcho endpoint or SDK shape
 - A broad multi-provider abstraction beyond the minimal reasoning adapter interface
@@ -1041,12 +1044,13 @@ It should not own the session / peer / claim domain model.
   - Ollama available
   - `nomic-embed-text` installed
   - Codex SDK credentials available through Hermes environment/runtime
-- Decide whether the first consumer is:
-  - an internal Hermes patch
-  - an MCP wrapper
-  - or both
+  - In embedded v1, reasoning adapter availability is expected to track the active Hermes agent model path rather than a separate memory-only LLM lifecycle
+- Lock the first consumer as an internal Hermes patch for v1.
 - Treat `embedded` mode as the first deployment target.
+- In `embedded` mode, assume one owning Hermes process per Continuity SQLite store, one serialized commit lane, and in-process worker threads only.
+- Do not design or rely on multi-process write coordination in v1.
 - Keep the host API transport-neutral so a later local daemon wrapper can reuse the same engine contract.
+- Freeze the canonical typed host API contract before host integration work spreads.
 
 ## Sprint 1: Define Continuity Contracts
 
@@ -1055,6 +1059,7 @@ It should not own the session / peer / claim domain model.
 **Demo/Validation**:
 - Write a compatibility table mapping Hermes Honcho features to Continuity features.
 - Define the core SQLite entities and the reasoning adapter interface.
+- Freeze the canonical typed host API contract and fixture bundle schema.
 - Define the subject-graph, observation-log, claim-ledger, and memory-locus invariants.
 - Define the memory-admission gate and durable-promotion invariants.
 - Define the disclosure/audience layer and host-read eligibility invariants.
@@ -1088,10 +1093,12 @@ It should not own the session / peer / claim domain model.
   - `honcho_conclude` equivalent behavior
   - prefetch-driven prompt context
   - memory/write modes
+  - the normalized fixture-bundle schema that will be shared by Hermes parity, host-neutral engine fixtures, and later service-contract fixtures
 - **Dependencies**: None
 - **Acceptance Criteria**:
   - Every in-scope Hermes behavior is listed.
   - Anything intentionally omitted is explicit.
+  - The fixture bundle schema is explicit enough that Hermes becomes one fixture producer, not the sole definition of engine truth.
 - **Validation**:
   - Manual review against `~/.hermes/hermes-agent/honcho_integration/*`, `tools/honcho_tools.py`, and `run_agent.py`.
 
@@ -1117,10 +1124,12 @@ It should not own the session / peer / claim domain model.
   - `generate_structured`
   - `summarize_session`
   - `derive_claims`
+  - require schema-validated structured outputs before any semantic mutation path may publish authoritative state
 - **Dependencies**: Task 1.1
 - **Acceptance Criteria**:
   - Interface is minimal and Hermes-driven.
   - No provider-specific fields leak into core memory logic.
+  - Schema validation sits between reasoning output and authoritative memory mutation.
 - **Validation**:
   - Static typing and fake adapter tests.
 
@@ -1480,14 +1489,17 @@ It should not own the session / peer / claim domain model.
 - **Description**: Define how Continuity runs embedded first and daemonized later without semantic drift:
   - which deployment modes exist in v1 and later, starting with `embedded` and reserving `daemon`
   - which request/response contracts are canonical and transport-neutral
+  - how the canonical API schema is frozen before host integration and transport wrappers spread
   - which runtime responsibilities belong to the engine versus the host or daemon shell
   - how transaction entrypoints, durability waterlines, snapshots, and replay artifacts remain identical across modes
   - how local daemon transport should work when added later, preferring Unix domain sockets and explicitly avoiding hosted-service assumptions
   - how SQLite ownership, locking, and lifecycle differ between embedded and daemon execution without changing semantics
+  - how v1 embedded mode assumes one owning process per store, one commit lane, and in-process worker threads only
 - **Dependencies**: Tasks 1.10, 1.11, 1.12, and 1.13
 - **Acceptance Criteria**:
   - The plan can support in-process execution now and a local daemon later without bifurcating behavior.
   - Transport and process lifecycle concerns are explicit and kept out of the core engine contract.
+  - The canonical typed API contract is frozen before host integration.
 - **Validation**:
   - Invariant tests and architecture review.
 
@@ -1946,11 +1958,13 @@ It should not own the session / peer / claim domain model.
   - structured output for claim derivation
   - text output for dialectic answers
   - structured evidence references in outputs where applicable
+  - strict schema validation for structured outputs before downstream mutation paths can consume them
 - **Dependencies**: Sprint 1 complete
 - **Acceptance Criteria**:
   - Adapter satisfies the minimal interface.
   - Config for model/reasoning is centralized.
   - Adapter-facing prompting and structured-output expectations can vary by policy pack without changing core interfaces.
+  - Structured outputs are rejected cleanly when they fail schema validation.
 - **Validation**:
   - Fake adapter unit tests and opt-in live tests.
 
@@ -1959,7 +1973,9 @@ It should not own the session / peer / claim domain model.
 - **Description**: Use Codex adapter to derive candidate memory, admit durable typed claims, and update downstream compiled views.
 - **Dependencies**: Task 4.1
 - **Acceptance Criteria**:
+  - Observation capture remains durable even if later semantic derivation or schema validation fails.
   - Candidate memories are evaluated by the admission gate before any durable claim write.
+  - Schema-invalid or adapter-failed derivation runs publish no claims, no belief updates, and no compiled-view mutations from that derivation attempt.
   - Only admitted `durable_claim` outcomes are persisted in the claim ledger.
   - Retrieval index updates after new claims.
   - Each derived claim links to the observations and derivation run that produced it.
@@ -2220,6 +2236,18 @@ It should not own the session / peer / claim domain model.
 
 - Unit-test config normalization and session naming.
 - Unit-test SQLite repositories independently of retrieval and reasoning.
+- Organize fixtures into three families:
+  - `core engine fixtures` for host-neutral claim, locus, disclosure, forgetting, utility, snapshot, and waterline semantics
+  - `Hermes parity fixtures` for the actual v1 replacement surface and current Honcho behavior
+  - `service-contract fixtures` for canonical request/response conformance across embedded mode and later daemon mode
+- Normalize all fixture families into one bundle schema containing:
+  - observations
+  - host request
+  - policy version
+  - expected waterline
+  - expected compiled views
+  - expected disclosure and forgetting effects
+  - expected durable side effects
 - Add local live tests for:
   - Ollama embeddings
   - zvec indexing
@@ -2393,6 +2421,7 @@ It should not own the session / peer / claim domain model.
 - Replay records can become bloated if the artifact format is not bounded. Keep a strict schema and version it.
 - Codex SDK behavior may differ from Claude/OpenCode later. Keep the adapter interface narrow.
 - Structured-output reliability needs explicit validation and retry strategy.
+- Schema-light reasoning writes can silently corrupt memory if validation boundaries are weak. Keep observation capture separate from semantic mutation and require schema validation before publication.
 - Async prefetch should never become a hidden source of stale state.
 - Embedded and daemon modes can drift if the API boundary leaks Python internals or if one mode gains in-process shortcuts the other cannot honor. Keep one transport-neutral service contract and test both modes against it.
 - Migration and AI identity seeding should remain explicit flows, not implicit magic.
