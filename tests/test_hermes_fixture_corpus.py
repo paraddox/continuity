@@ -116,6 +116,26 @@ class HermesFixtureCorpusTests(unittest.TestCase):
         self.assertIn("recall mode", text.lower())
         self.assertIn("migration", text.lower())
 
+    def test_compatibility_doc_freezes_v1_scope_and_bundle_schema(self) -> None:
+        text = DOC_PATH.read_text(encoding="utf-8")
+        normalized = text.lower()
+
+        self.assertIn("internal Hermes patch only", text)
+        self.assertIn("embedded/in-process first", text)
+        self.assertIn("daemon later", text)
+        self.assertIn("one owning Hermes process per Continuity SQLite store", text)
+        self.assertIn("one serialized commit lane", text)
+        self.assertIn("in-process worker threads only", text)
+        self.assertIn("no multi-process write coordination in v1", text)
+        self.assertIn("normalized fixture bundle schema", normalized)
+        self.assertIn("bundle_version", text)
+        self.assertIn("fixture_family", text)
+        self.assertIn("fixtures", text)
+        self.assertIn("producer", text)
+        self.assertIn("intentional omissions", normalized)
+        self.assertIn("hosted or self-hosted honcho server", normalized)
+        self.assertIn("durable forget api", normalized)
+
 
 if __name__ == "__main__":
     unittest.main()
