@@ -193,6 +193,109 @@ admission decision should be attributable enough for replay, debugging, and
 policy evaluation, including the write budgets and threshold gaps that blocked
 durable promotion.
 
+## Disclosure / Audience Layer
+
+Disclosure is explicit and transport-neutral. Scope differs from audience:
+`scope` says where a claim may apply, while disclosure says who may see it,
+through which host channel, for which purpose, and in what transformed form.
+
+The v1 audience principals are:
+
+- `assistant_internal`
+- `current_user`
+- `current_peer`
+- `shared_session`
+- `host_internal`
+
+Viewer kinds stay explicit as well:
+
+- `assistant`
+- `user`
+- `peer`
+- `host`
+
+The v1 disclosure channels and purposes stay small and inspectable:
+
+- `prompt`
+- `answer`
+- `search`
+- `profile`
+- `evidence`
+- `replay`
+- `migration`
+- `inspection`
+
+Disclosure actions are also explicit:
+
+- `allow`
+- `summarize`
+- `redact`
+- `withhold`
+- `needs_consent`
+
+Claim-level defaults, locus-level defaults, and compiled-view overrides compose
+into one effective disclosure policy for a host read. Composition may only
+narrow audience reach, channels, purposes, or transform actions; it should not
+silently widen disclosure relative to the underlying claim contract.
+
+`current_peer` is cross-peer-sensitive by default. A read compiled for one peer
+must not leak to another peer merely because the underlying claim is relevant.
+That makes cross-peer leakage a direct contract violation rather than a ranking
+bug.
+
+Every host-facing read should be explainable in terms of:
+
+- the effective policy name and version stamp
+- the audience principal and viewer kind
+- the channel and purpose
+- whether the content was exposed directly, summarized, redacted, withheld, or
+  gated on consent
+- why the final transform happened
+
+Turn artifacts and replay should capture disclosure decisions explicitly, and
+redaction or withholding should emit inspectable utility-facing events such as
+`redacted` or `withheld`.
+
+## Forgetting / Retraction / Erasure Contract
+
+Forgetting is distinct from both correction and disclosure. The v1 withdrawal
+modes are:
+
+- `supersede`
+- `suppress`
+- `seal`
+- `expunge`
+
+Their semantics stay explicit:
+
+- `supersede` is revision, not erasure; historical content remains recoverable
+  for audit and replay
+- `suppress` withdraws the memory from normal prompt, answer, search, profile,
+  and retrieval flows while retaining bounded auditable content
+- `seal` removes host-visible payloads, snapshots, and replay inputs while
+  keeping only minimal administrative traceability
+- `expunge` removes recoverable content from the claim ledger, observation log,
+  indexes, snapshots, caches, archives, imports, and future derivations, while
+  leaving only minimal tombstones if policy requires
+
+Targets may be claims, loci, subjects, sessions, imported artifacts, or derived
+views. The contract must say what survives in the claim ledger, observation
+log, vector index, snapshot store, prefetch cache, replay artifacts, archive
+tiers, import pipeline, derivation pipeline, and tombstones ledger for each
+mode.
+
+`suppress`, `seal`, and `expunge` all withdraw host-facing reads, but they do
+not retain the same thing:
+
+- suppress keeps recoverable content for audit
+- seal keeps only administrative metadata
+- expunge keeps only non-recoverable tombstones
+
+Replay avoid resurrecting expunged content, and the same resurrection guard
+must cover imports, replay artifacts, derivation pipelines, caches, archives,
+and vector indexes. That is how append-only auditing can coexist with explicit
+withdrawal without silently reintroducing removed memory later.
+
 ## Resolution Queue
 
 Unresolved memory state becomes explicit work in a resolution queue rather than
