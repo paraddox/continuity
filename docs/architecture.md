@@ -552,3 +552,79 @@ Host-facing operations stay explicit about the minimum waterline they require:
 This keeps async behavior precise: callers know which waterline was awaited,
 which phases may still be running after return, and which guarantees remain the
 same for embedded mode now and a daemon wrapper later.
+
+## Mutation Arbiter
+
+Continuity routes every authoritative publication through one serialized commit
+lane instead of letting concurrent workers mutate host-visible state directly.
+
+The v1 boundary between off-lane computation and authoritative publication
+stays explicit. Allowed off-lane computation is limited to:
+
+- `embedding_generation`
+- `claim_derivation`
+- `view_compilation`
+- `prefetch_preparation`
+
+Those computations may run on worker threads, but they must publish back
+through the mutation arbiter before they change authoritative state.
+
+The v1 authoritative publication set is:
+
+- `observation_commit`
+- `claim_commit`
+- `belief_revision`
+- `forgetting_publication`
+- `view_publication`
+- `work_status_transition`
+- `snapshot_head_promotion`
+- `durability_signal`
+- `outcome_recording`
+
+Each arbiter publication carries:
+
+- a positive lane position
+- the originating transaction and phase
+- the affected authoritative object ids
+- any reached durability waterline
+- replay-visible arbiter order metadata
+
+`snapshot-head promotion` and `durability-waterline completion signaling` stay
+on the same serialized commit lane as other authoritative publication. Replay
+and debugging should refer to arbiter order rather than inferred
+interleavings.
+
+## System Event Journal
+
+The system event journal is append-only and records authoritative publication in
+journal order rather than forcing reconstruction from mutable table state
+alone.
+
+The v1 event type set is:
+
+- `observation_ingested`
+- `claim_committed`
+- `belief_revised`
+- `memory_forgotten`
+- `view_compiled`
+- `snapshot_published`
+- `outcome_recorded`
+
+Each journal entry links back to the originating arbiter lane position so
+journal order and arbiter order can both be inspected during replay, crash
+recovery, and debugging.
+
+Payload handling is explicit:
+
+- `inline` stores small control-plane facts directly in the journal entry
+- `reference` stores stable identifiers that point at larger artifacts
+- `mixed` stores a compact summary inline plus stable references
+
+Every journal entry keeps:
+
+- an ordered journal position
+- event type and transaction kind
+- the originating arbiter lane position
+- the affected authoritative object ids
+- durability-waterline context where relevant
+- enough payload or references for reconstruction and debugging
