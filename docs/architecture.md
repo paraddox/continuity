@@ -240,3 +240,71 @@ Every host-visible artifact must carry claim provenance. Profile and card views
 are projections over active claims, and dialectic answers may include
 supporting claim and observation payloads, but none of those artifacts may
 exist without claim provenance back to the ledger.
+
+## Compiled View Algebra
+
+Continuity exposes a small, named compiled-view algebra instead of treating
+reads as one generic materialization path. The v1 view kinds are:
+
+- `state_view(subject, locus)` for current resolved belief state
+- `timeline_view(subject, locus)` for ordered claim and revision history
+- `set_view(subject, locus)` for loci that intentionally keep multiple active
+  items
+- `profile_view(subject)` for peer-card and profile projections
+- `prompt_view(session, peer, policy)` for prompt-ready memory assembly
+- `evidence_view(target)` for provenance behind a claim, belief, or answer
+- `answer_view(query, scope)` for dialectic answers assembled from the other
+  view kinds
+
+Each view contract stays transport-neutral and explicit about:
+
+- its input boundaries
+- which other view kinds it may compose over
+- deterministic and cacheable behavior
+- snapshot binding
+- provenance surface
+- disclosure purposes
+- default hot, warm, or cold tier inclusion
+
+`prompt_view` and `answer_view` compose over `state_view`, `timeline_view`,
+`set_view`, `profile_view`, and `evidence_view` instead of reaching around the
+view layer directly. `evidence_view` is the richest provenance surface and must
+expose both claim ids and supporting observation ids. Other host-visible views
+still require claim provenance even when they do not surface raw observations by
+default.
+
+## Budgeted Prompt Planner
+
+Continuity treats `prompt_view` assembly as a deterministic packing problem.
+The planner works from:
+
+- a hard token budget
+- optional soft sub-budgets for fragment families such as evidence
+- candidate fragments produced by prompt-eligible source views
+- policy ordering and utility weights
+- disclosure transforms and epistemic exposure rules
+
+The planner must expose inclusion and exclusion reasons for every candidate
+fragment. It also records disclosure transformation reasons like
+`redacted_for_peer` or `withheld_requires_consent`, and it records degradation
+ladder outcomes when a fragment is compressed instead of dropped.
+
+The first degradation ladder is intentionally small and explicit:
+
+- prefer full fragments while they fit
+- compress eligible fragments when the full form would break a soft or hard
+  budget
+- drop fragments only after compression fails
+
+Examples of deterministic degradation reasons include `collapsed timeline` and
+`dropped low-priority evidence`.
+
+Prompt exposure remains status-aware:
+
+- `supported` fragments may include normally
+- `tentative` and `stale` fragments must be qualified
+- `unknown`, `conflicted`, and `needs_confirmation` fragments are suppressed by
+  default
+
+This keeps prompt packing bounded, explainable, and replayable under one
+inspectable contract.
