@@ -1026,9 +1026,9 @@ It should not own the session / peer / claim domain model.
 - **Description**: Define the host-visible compiled view types:
   - which view kinds exist in v1
   - which claims, loci, and policies feed each view kind
-- which view kinds are single-locus, multi-locus, subject-level, session-level, or query-level
-- how audience/disclosure policy constrains each view kind
-- how provenance is exposed by each view kind
+  - which view kinds are single-locus, multi-locus, subject-level, session-level, or query-level
+  - how audience/disclosure policy constrains each view kind
+  - how provenance is exposed by each view kind
   - how prompt assembly and answer generation compose over lower-level views
 - **Dependencies**: Tasks 1.4, 1.5, 1.7, 1.8, and 1.9
 - **Acceptance Criteria**:
@@ -1146,12 +1146,12 @@ It should not own the session / peer / claim domain model.
 ### Task 1.18: Define budgeted prompt planner
 - **Location**: `src/continuity/prompt_planner.py`, `docs/architecture.md`, `tests/test_prompt_planner_model.py`
 - **Description**: Define the bounded prompt packing model for `prompt_view`:
-- which fragment classes can compete for prompt space
-- which hard and soft budgets exist in v1
-- how disclosure-ineligible fragments are filtered, summarized, redacted, or withheld
-- how priority, compression, and drop order are defined
-- how planner decisions are exposed for replay, debugging, and token-cost analysis
-- how policy packs tune prompt economics without changing claim semantics
+  - which fragment classes can compete for prompt space
+  - which hard and soft budgets exist in v1
+  - how disclosure-ineligible fragments are filtered, summarized, redacted, or withheld
+  - how priority, compression, and drop order are defined
+  - how planner decisions are exposed for replay, debugging, and token-cost analysis
+  - how policy packs tune prompt economics without changing claim semantics
 - **Dependencies**: Tasks 1.8, 1.10, 1.11, and 1.12
 - **Acceptance Criteria**:
   - Prompt assembly can be described as deterministic packing under explicit budget.
