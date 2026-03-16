@@ -161,6 +161,76 @@ inspection transport-neutral and inspectable. A host can say which policy
 version produced a memory decision instead of reverse-engineering behavior from
 scattered module defaults.
 
+## Memory Admission Gate
+
+Admission is an explicit gate between candidate memory and durable claim
+publication. v1 keeps the outcome set small and closed:
+
+- `discard`
+- `session_ephemeral`
+- `prompt_only`
+- `needs_confirmation`
+- `durable_claim`
+
+Admission decisions must stay explainable in terms of explicit thresholds and
+budgets rather than opaque salience scoring alone. The gate records:
+
+- evidence threshold
+- novelty threshold
+- stability threshold
+- salience threshold
+- per-partition write budgets
+- utility signals that can refine a tie but cannot replace hard policy rules
+
+Only `durable_claim` may publish into the claim ledger. `session_ephemeral` and
+`prompt_only` keep candidate material useful without creating durable claims.
+`needs_confirmation` keeps the candidate out of the claim ledger and hands it
+off to the resolution queue for follow-up before durable promotion.
+
+Admission differs from later belief revision, disclosure, forgetting, and
+tiering. It decides whether a candidate memory may become durable at all. Every
+admission decision should be attributable enough for replay, debugging, and
+policy evaluation, including the write budgets and threshold gaps that blocked
+durable promotion.
+
+## Resolution Queue
+
+Unresolved memory state becomes explicit work in a resolution queue rather than
+remaining a dead-end label on a claim candidate. The v1 queue can be created
+from:
+
+- `needs_confirmation`
+- `needs_followup`
+- `open_question`
+- `stale-on-use`
+- conflicted loci
+
+Queue priority remains policy-first. Base priority decides the main ordering,
+and utility weights only break ties within the same policy band. That keeps the
+queue inspectable and prevents utility from replacing explicit follow-up rules.
+
+Queue items may surface through:
+
+- `prompt_queue`
+- `host_api`
+- `inspection`
+
+Those surfaces must not publish durable memory directly. They expose pending
+work without polluting the claim ledger.
+
+Resolution actions are explicit:
+
+- confirm
+- correct
+- discard
+- keep ephemeral
+- promote to durable claim
+
+Every resolution records downstream effects for admission, belief revision,
+outcome recording, and replay. That makes it possible to explain why a follow-up
+was queued, surfaced, deferred, or resolved, and how the final action changed
+the memory pipeline.
+
 ## Host-Visible Artifacts
 
 No durable derived memory artifact exists outside the claim ledger. Host-visible
