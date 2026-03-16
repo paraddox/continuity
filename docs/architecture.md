@@ -334,6 +334,45 @@ outcome recording, and replay. That makes it possible to explain why a follow-up
 was queued, surfaced, deferred, or resolved, and how the final action changed
 the memory pipeline.
 
+## Outcome Ledger and Utility Ledger
+
+Continuity records downstream feedback in an explicit outcome ledger instead of
+burying it in ad hoc notes or implicit counters. Outcome records are distinct
+from epistemic status: `supported`, `tentative`, `conflicted`, and similar
+states describe what the system currently believes, while the outcome ledger
+describes what happened after the memory was used. This outcome ledger remains
+distinct from epistemic status even when both are attached to the same claim or
+compiled view.
+
+The v1 outcome ledger stays small and closed:
+
+- `prompt_included`
+- `answer_cited`
+- `user_confirmed`
+- `user_corrected`
+- `stale_on_use`
+
+Each outcome record must keep:
+
+- a concrete target such as a claim, compiled view, answer, or resolution item
+- a policy stamp and timestamp
+- explicit rationale
+- claim provenance whenever the target can affect durable memory interpretation
+- replay capture so counterfactual runs can inspect the same downstream facts
+
+The utility ledger is compiled from explicit outcome records rather than from
+heuristic guesses. v1 compiles the following utility signals and weights:
+
+- `prompt_inclusion`
+- `answer_citation`
+- `user_corrected`
+- `stale_on_use`
+
+Compiled utility weights are deterministic, attributable, and distinct from raw
+outcomes or epistemic status. They give admission, prompting, resolution,
+retention, and replay one inspectable value model while keeping policy order
+primary and using utility only where the policy pack explicitly allows it.
+
 ## Host-Visible Artifacts
 
 No durable derived memory artifact exists outside the claim ledger. Host-visible
