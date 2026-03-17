@@ -21,14 +21,20 @@ The smoke command prints a JSON summary after it has:
 
 ## Host note
 
-On this host, the published `zvec 0.2.0` wheel installed in a clean Python `3.12` venv but crashed during import with `Illegal instruction`.
-The Continuity smoke helper itself was verified against a source-built `zvec 0.2.1.dev4` under system `python3.12`:
+Continuity pins `zvec>=0.2.1b0,<0.3` in the `retrieval-zvec` extra because the published `zvec 0.2.0`
+Linux `x86_64` wheel can crash with `Illegal instruction` on CPUs that do not expose `AVX-512`.
+That failure was reproduced on this host (`AMD Ryzen 9 5900X`), where `zvec 0.2.0` installed cleanly in a
+fresh Python `3.12` venv but died on plain `import zvec`, while `zvec 0.2.1b0` imported cleanly and passed
+the Continuity smoke helper.
+
+If you need to verify a manually installed wheel or source checkout directly, run:
 
 ```bash
 PYTHONPATH=src python3.12 -m continuity.index.zvec_smoke
 ```
 
-If the wheel crashes on your machine too, use a compatible source build of `zvec` before rerunning the smoke command.
+If `zvec 0.2.1b0` still crashes on your machine or no compatible wheel exists for your platform, install a
+compatible source build of `zvec` before rerunning the smoke command.
 
 ## Persistent smoke collection
 

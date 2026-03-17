@@ -30,7 +30,13 @@ class PackagingBootstrapTests(unittest.TestCase):
         self.assertEqual(pyproject["project"]["requires-python"], ">=3.11")
         self.assertEqual(pyproject["tool"]["setuptools"]["package-dir"][""], "src")
         self.assertIn("retrieval-zvec", pyproject["project"]["optional-dependencies"])
-        self.assertIn("zvec>=0.2.0,<0.3", pyproject["project"]["optional-dependencies"]["retrieval-zvec"])
+        self.assertIn("zvec>=0.2.1b0,<0.3", pyproject["project"]["optional-dependencies"]["retrieval-zvec"])
+
+    def test_bootstrap_doc_records_safe_zvec_floor_for_non_avx512_hosts(self) -> None:
+        bootstrap_doc = (ROOT_DIR / "docs" / "retrieval-backend-bootstrap.md").read_text()
+
+        self.assertIn("zvec>=0.2.1b0,<0.3", bootstrap_doc)
+        self.assertIn("AVX-512", bootstrap_doc)
 
 
 class ZvecSmokeModuleTests(unittest.TestCase):
