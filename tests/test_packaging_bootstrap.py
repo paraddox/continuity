@@ -30,6 +30,11 @@ class PackagingBootstrapTests(unittest.TestCase):
         self.assertEqual(pyproject["project"]["name"], "continuity")
         self.assertEqual(pyproject["project"]["requires-python"], ">=3.11")
         self.assertEqual(pyproject["tool"]["setuptools"]["package-dir"][""], "src")
+        self.assertIn("dev", pyproject["project"]["optional-dependencies"])
+        self.assertIn("build", pyproject["project"]["optional-dependencies"]["dev"])
+        self.assertIn("pytest", pyproject["project"]["optional-dependencies"]["dev"])
+        self.assertIn("reasoning-openai", pyproject["project"]["optional-dependencies"])
+        self.assertIn("openai", pyproject["project"]["optional-dependencies"]["reasoning-openai"])
         self.assertIn("retrieval-zvec", pyproject["project"]["optional-dependencies"])
         self.assertIn("zvec>=0.2.1b0,<0.3", pyproject["project"]["optional-dependencies"]["retrieval-zvec"])
 
@@ -53,6 +58,27 @@ class PackagingBootstrapTests(unittest.TestCase):
 
         self.assertIn("zvec>=0.2.1b0,<0.3", bootstrap_doc)
         self.assertIn("AVX-512", bootstrap_doc)
+
+    def test_readme_documents_core_dev_and_optional_runtime_setup(self) -> None:
+        readme_path = ROOT_DIR / "README.md"
+        self.assertTrue(readme_path.exists(), "README.md should document project bootstrap and optional extras")
+
+        readme = readme_path.read_text()
+
+        self.assertIn("scripts/bootstrap-dev.sh", readme)
+        self.assertIn('python -m pip install -e ".[retrieval-zvec]"', readme)
+        self.assertIn("CONTINUITY_RUN_LIVE_OLLAMA=1", readme)
+        self.assertIn("CONTINUITY_RUN_LIVE_OPENAI=1", readme)
+
+    def test_bootstrap_script_installs_dev_and_reasoning_openai_extras(self) -> None:
+        script_path = ROOT_DIR / "scripts" / "bootstrap-dev.sh"
+        self.assertTrue(script_path.exists(), "scripts/bootstrap-dev.sh should exist")
+
+        script = script_path.read_text()
+
+        self.assertIn("python3.11", script)
+        self.assertIn('python -m pip install -e ".[dev,reasoning-openai]"', script)
+        self.assertIn("python -m pytest", script)
 
 
 class ZvecSmokeModuleTests(unittest.TestCase):

@@ -231,7 +231,12 @@ def _default_responses_client() -> ResponsesClient:
             "OpenAI Python SDK is required when no Responses client is injected"
         ) from exc
 
-    return OpenAI().responses
+    try:
+        return OpenAI().responses
+    except Exception as exc:
+        raise CodexSDKUnavailableError(
+            "OpenAI Responses client is unavailable; inject a client or configure OPENAI_API_KEY"
+        ) from exc
 
 
 class CodexAdapter:

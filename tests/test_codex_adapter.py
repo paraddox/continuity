@@ -6,6 +6,8 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -191,6 +193,15 @@ class CodexAdapterTests(unittest.TestCase):
     def test_default_client_requires_openai_sdk_when_not_injected(self) -> None:
         with self.assertRaises(CodexSDKUnavailableError):
             CodexAdapter()
+
+    def test_default_client_wraps_sdk_configuration_failures(self) -> None:
+        class BrokenOpenAI:
+            def __init__(self) -> None:
+                raise RuntimeError("missing api key")
+
+        with patch.dict(sys.modules, {"openai": SimpleNamespace(OpenAI=BrokenOpenAI)}):
+            with self.assertRaises(CodexSDKUnavailableError):
+                CodexAdapter()
 
     def test_opt_in_live_round_trip_uses_real_openai_client(self) -> None:
         if os.environ.get("CONTINUITY_RUN_LIVE_OPENAI") != "1":
