@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from continuity.admission import AdmissionDecisionTrace, AdmissionRepository
@@ -131,6 +131,26 @@ class SessionMessageRecord:
             _validate_timestamp(self.observed_at, field_name="observed_at"),
         )
         object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBufferRecord:
+    buffer_key: str
+    session_id: str
+    buffer_kind: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "buffer_key", _clean_text(self.buffer_key, field_name="buffer_key"))
+        object.__setattr__(self, "session_id", _clean_text(self.session_id, field_name="session_id"))
+        object.__setattr__(self, "buffer_kind", _clean_text(self.buffer_kind, field_name="buffer_kind"))
+        object.__setattr__(self, "payload", dict(self.payload))
+        object.__setattr__(
+            self,
+            "updated_at",
+            _validate_timestamp(self.updated_at, field_name="updated_at"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +459,103 @@ class SQLiteRepository:
             )
             for row in rows
         )
+
+    def save_session_buffer(self, buffer: SessionBufferRecord) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO session_ephemeral_buffers(
+                    buffer_key,
+                    session_id,
+                    buffer_kind,
+                    payload_json,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(buffer_key) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    buffer_kind = excluded.buffer_kind,
+                    payload_json = excluded.payload_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    buffer.buffer_key,
+                    buffer.session_id,
+                    buffer.buffer_kind,
+                    _dump_json(buffer.payload),
+                    buffer.updated_at.isoformat(),
+                ),
+            )
+
+    def read_session_buffer(self, buffer_key: str) -> SessionBufferRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                buffer_key,
+                session_id,
+                buffer_kind,
+                payload_json,
+                updated_at
+            FROM session_ephemeral_buffers
+            WHERE buffer_key = ?
+            """,
+            (_clean_text(buffer_key, field_name="buffer_key"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return SessionBufferRecord(
+            buffer_key=row["buffer_key"],
+            session_id=row["session_id"],
+            buffer_kind=row["buffer_kind"],
+            payload=_load_json_object(row["payload_json"]),
+            updated_at=_parse_timestamp(row["updated_at"], field_name="updated_at"),
+        )
+
+    def list_session_buffers(
+        self,
+        *,
+        session_id: str,
+        buffer_kind: str | None = None,
+    ) -> tuple[SessionBufferRecord, ...]:
+        parameters: list[str] = [_clean_text(session_id, field_name="session_id")]
+        where = ["session_id = ?"]
+        if buffer_kind is not None:
+            where.append("buffer_kind = ?")
+            parameters.append(_clean_text(buffer_kind, field_name="buffer_kind"))
+        rows = self._connection.execute(
+            f"""
+            SELECT
+                buffer_key,
+                session_id,
+                buffer_kind,
+                payload_json,
+                updated_at
+            FROM session_ephemeral_buffers
+            WHERE {" AND ".join(where)}
+            ORDER BY updated_at, buffer_key
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(
+            SessionBufferRecord(
+                buffer_key=row["buffer_key"],
+                session_id=row["session_id"],
+                buffer_kind=row["buffer_kind"],
+                payload=_load_json_object(row["payload_json"]),
+                updated_at=_parse_timestamp(row["updated_at"], field_name="updated_at"),
+            )
+            for row in rows
+        )
+
+    def delete_session_buffer(self, buffer_key: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                DELETE FROM session_ephemeral_buffers
+                WHERE buffer_key = ?
+                """,
+                (_clean_text(buffer_key, field_name="buffer_key"),),
+            )
 
     def save_observation(self, observation: Observation, *, message_id: str | None = None) -> None:
         cleaned_message_id = None if message_id is None else _clean_text(message_id, field_name="message_id")
