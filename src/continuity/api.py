@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
 
-from continuity.service import SERVICE_CONTRACT_VERSION
+from continuity.disclosure import DisclosureContext
+from continuity.service import (
+    ContinuityServiceFacade,
+    SERVICE_CONTRACT_VERSION,
+    ServiceOperation,
+    ServiceRequest,
+    ServiceResponse,
+)
 from continuity.transactions import DurabilityWaterline, TransactionKind
+from continuity.views import ViewKind
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -17,12 +26,37 @@ def _clean_text(value: str, *, field_name: str) -> str:
     return cleaned
 
 
+def _optional_clean_text(value: str | None, *, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _clean_text(value, field_name=field_name)
+
+
 def _dedupe_cleaned(values: tuple[str, ...], *, field_name: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(_clean_text(value, field_name=field_name) for value in values))
 
 
 def _dedupe_enum_tuple[T: StrEnum](values: tuple[T, ...]) -> tuple[T, ...]:
     return tuple(dict.fromkeys(values))
+
+
+def _clean_optional_limit(value: int | None, *, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return value
+
+
+def _payload_fields(**fields: object) -> dict[str, object]:
+    payload: dict[str, object] = {}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, tuple) and not value:
+            continue
+        payload[key] = value
+    return payload
 
 
 class DeploymentMode(StrEnum):
@@ -196,3 +230,434 @@ def deployment_boundaries() -> dict[DeploymentMode, DeploymentBoundary]:
 
 def deployment_boundary_for(mode: DeploymentMode) -> DeploymentBoundary:
     return deployment_boundaries()[mode]
+
+
+class ContinuityReadApi:
+    """Typed read-side and inspection surface over the transport-neutral facade."""
+
+    def __init__(self, facade: ContinuityServiceFacade) -> None:
+        self._facade = facade
+
+    def search(
+        self,
+        *,
+        request_id: str,
+        query_text: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+        limit: int | None = None,
+        subject_id: str | None = None,
+        view_kinds: tuple[ViewKind, ...] = (),
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            query_text=_clean_text(query_text, field_name="query_text"),
+            limit=_clean_optional_limit(limit, field_name="limit"),
+            subject_id=_optional_clean_text(subject_id, field_name="subject_id"),
+            view_kinds=_dedupe_enum_tuple(view_kinds),
+        )
+        return self._execute(
+            operation=ServiceOperation.SEARCH,
+            request_id=request_id,
+            payload=payload,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def get_state_view(
+        self,
+        *,
+        request_id: str,
+        view_key: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._read_view(
+            operation=ServiceOperation.GET_STATE_VIEW,
+            request_id=request_id,
+            view_key=view_key,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def get_timeline_view(
+        self,
+        *,
+        request_id: str,
+        view_key: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._read_view(
+            operation=ServiceOperation.GET_TIMELINE_VIEW,
+            request_id=request_id,
+            view_key=view_key,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def get_profile_view(
+        self,
+        *,
+        request_id: str,
+        view_key: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._read_view(
+            operation=ServiceOperation.GET_PROFILE_VIEW,
+            request_id=request_id,
+            view_key=view_key,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def get_prompt_view(
+        self,
+        *,
+        request_id: str,
+        view_key: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._read_view(
+            operation=ServiceOperation.GET_PROMPT_VIEW,
+            request_id=request_id,
+            view_key=view_key,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def answer_memory_question(
+        self,
+        *,
+        request_id: str,
+        question: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+        subject_id: str | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            question=_clean_text(question, field_name="question"),
+            subject_id=_optional_clean_text(subject_id, field_name="subject_id"),
+        )
+        return self._execute(
+            operation=ServiceOperation.ANSWER_MEMORY_QUESTION,
+            request_id=request_id,
+            payload=payload,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def list_memory_follow_ups(
+        self,
+        *,
+        request_id: str,
+        subject_id: str | None = None,
+        status: str | None = None,
+        limit: int | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            subject_id=_optional_clean_text(subject_id, field_name="subject_id"),
+            status=_optional_clean_text(status, field_name="status"),
+            limit=_clean_optional_limit(limit, field_name="limit"),
+        )
+        return self._execute(
+            operation=ServiceOperation.LIST_MEMORY_FOLLOW_UPS,
+            request_id=request_id,
+            payload=payload,
+        )
+
+    def resolve_subject(
+        self,
+        *,
+        request_id: str,
+        reference_text: str,
+        subject_kind: str | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            reference_text=_clean_text(reference_text, field_name="reference_text"),
+            subject_kind=_optional_clean_text(subject_kind, field_name="subject_kind"),
+        )
+        return self._execute(
+            operation=ServiceOperation.RESOLVE_SUBJECT,
+            request_id=request_id,
+            payload=payload,
+        )
+
+    def inspect_evidence(
+        self,
+        *,
+        request_id: str,
+        target_id: str,
+        target_kind: str,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_EVIDENCE,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_id=_clean_text(target_id, field_name="target_id"),
+                target_kind=_clean_text(target_kind, field_name="target_kind"),
+            ),
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def inspect_admission(
+        self,
+        *,
+        request_id: str,
+        candidate_id: str | None = None,
+        outcome: str | None = None,
+        limit: int | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_ADMISSION,
+            request_id=request_id,
+            payload=_payload_fields(
+                candidate_id=_optional_clean_text(candidate_id, field_name="candidate_id"),
+                outcome=_optional_clean_text(outcome, field_name="outcome"),
+                limit=_clean_optional_limit(limit, field_name="limit"),
+            ),
+        )
+
+    def inspect_resolution_queue(
+        self,
+        *,
+        request_id: str,
+        status: str | None = None,
+        session_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_RESOLUTION_QUEUE,
+            request_id=request_id,
+            payload=_payload_fields(
+                status=_optional_clean_text(status, field_name="status"),
+                session_id=_optional_clean_text(session_id, field_name="session_id"),
+            ),
+        )
+
+    def inspect_disclosure(
+        self,
+        *,
+        request_id: str,
+        target_id: str | None = None,
+        target_kind: str | None = None,
+        policy_name: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_DISCLOSURE,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_id=_optional_clean_text(target_id, field_name="target_id"),
+                target_kind=_optional_clean_text(target_kind, field_name="target_kind"),
+                policy_name=_optional_clean_text(policy_name, field_name="policy_name"),
+            ),
+        )
+
+    def inspect_forgetting(
+        self,
+        *,
+        request_id: str,
+        target_id: str | None = None,
+        target_kind: str | None = None,
+        mode: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_FORGETTING,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_id=_optional_clean_text(target_id, field_name="target_id"),
+                target_kind=_optional_clean_text(target_kind, field_name="target_kind"),
+                mode=_optional_clean_text(mode, field_name="mode"),
+            ),
+        )
+
+    def inspect_epistemic_status(
+        self,
+        *,
+        request_id: str,
+        claim_id: str | None = None,
+        view_key: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_EPISTEMIC_STATUS,
+            request_id=request_id,
+            payload=_payload_fields(
+                claim_id=_optional_clean_text(claim_id, field_name="claim_id"),
+                view_key=_optional_clean_text(view_key, field_name="view_key"),
+            ),
+        )
+
+    def inspect_outcomes(
+        self,
+        *,
+        request_id: str,
+        target_id: str | None = None,
+        target_kind: str | None = None,
+        label: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_OUTCOMES,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_id=_optional_clean_text(target_id, field_name="target_id"),
+                target_kind=_optional_clean_text(target_kind, field_name="target_kind"),
+                label=_optional_clean_text(label, field_name="label"),
+            ),
+        )
+
+    def inspect_utility(
+        self,
+        *,
+        request_id: str,
+        target_id: str | None = None,
+        target_kind: str | None = None,
+        policy_stamp: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_UTILITY,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_id=_optional_clean_text(target_id, field_name="target_id"),
+                target_kind=_optional_clean_text(target_kind, field_name="target_kind"),
+                policy_stamp=_optional_clean_text(policy_stamp, field_name="policy_stamp"),
+            ),
+        )
+
+    def inspect_turn_decision(
+        self,
+        *,
+        request_id: str,
+        artifact_id: str | None = None,
+        run_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_TURN_DECISION,
+            request_id=request_id,
+            payload=_payload_fields(
+                artifact_id=_optional_clean_text(artifact_id, field_name="artifact_id"),
+                run_id=_optional_clean_text(run_id, field_name="run_id"),
+            ),
+        )
+
+    def inspect_policy(
+        self,
+        *,
+        request_id: str,
+        policy_stamp: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_POLICY,
+            request_id=request_id,
+            payload=_payload_fields(
+                policy_stamp=_optional_clean_text(policy_stamp, field_name="policy_stamp"),
+            ),
+        )
+
+    def inspect_compiler(
+        self,
+        *,
+        request_id: str,
+        node_id: str | None = None,
+        dirty_only: bool = False,
+        limit: int | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_COMPILER,
+            request_id=request_id,
+            payload=_payload_fields(
+                node_id=_optional_clean_text(node_id, field_name="node_id"),
+                dirty_only=dirty_only if dirty_only else None,
+                limit=_clean_optional_limit(limit, field_name="limit"),
+            ),
+        )
+
+    def inspect_snapshot(
+        self,
+        *,
+        request_id: str,
+        snapshot_id: str | None = None,
+        include_diff_from: str | None = None,
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_SNAPSHOT,
+            request_id=request_id,
+            payload=_payload_fields(
+                snapshot_id=_optional_clean_text(snapshot_id, field_name="snapshot_id"),
+                include_diff_from=_optional_clean_text(
+                    include_diff_from,
+                    field_name="include_diff_from",
+                ),
+            ),
+        )
+
+    def inspect_tiers(
+        self,
+        *,
+        request_id: str,
+        target_kind: str | None = None,
+        target_id: str | None = None,
+        policy_stamp: str | None = None,
+        tiers: tuple[str, ...] = (),
+    ) -> ServiceResponse:
+        return self._inspect(
+            operation=ServiceOperation.INSPECT_TIERS,
+            request_id=request_id,
+            payload=_payload_fields(
+                target_kind=_optional_clean_text(target_kind, field_name="target_kind"),
+                target_id=_optional_clean_text(target_id, field_name="target_id"),
+                policy_stamp=_optional_clean_text(policy_stamp, field_name="policy_stamp"),
+                tiers=_dedupe_cleaned(tiers, field_name="tiers") if tiers else (),
+            ),
+        )
+
+    def _read_view(
+        self,
+        *,
+        operation: ServiceOperation,
+        request_id: str,
+        view_key: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None,
+    ) -> ServiceResponse:
+        return self._execute(
+            operation=operation,
+            request_id=request_id,
+            payload={"view_key": _clean_text(view_key, field_name="view_key")},
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def _inspect(
+        self,
+        *,
+        operation: ServiceOperation,
+        request_id: str,
+        payload: Mapping[str, object],
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._execute(
+            operation=operation,
+            request_id=request_id,
+            payload=payload,
+            target_snapshot_id=target_snapshot_id,
+        )
+
+    def _execute(
+        self,
+        *,
+        operation: ServiceOperation,
+        request_id: str,
+        payload: Mapping[str, object],
+        disclosure_context: DisclosureContext | None = None,
+        target_snapshot_id: str | None = None,
+    ) -> ServiceResponse:
+        return self._facade.execute(
+            ServiceRequest(
+                operation=operation,
+                request_id=request_id,
+                payload=payload,
+                disclosure_context=disclosure_context,
+                target_snapshot_id=target_snapshot_id,
+            )
+        )
