@@ -12,7 +12,13 @@
       "status": "covered_with_manual_review",
       "impl_refs": ["docs/hermes-compatibility.md"],
       "proof_refs": ["tests/test_fixture_bundle.py", "tests/test_hermes_fixture_corpus.py", "tests/test_hermes_parity_fixtures.py"],
-      "manual_proof": ["Review Hermes compatibility documentation against the current Hermes honcho integration surface when parity targets change."],
+      "manual_proof": [
+        {
+          "description": "Review Hermes compatibility documentation against the current Hermes honcho integration surface when parity targets change.",
+          "last_reviewed_on": "2026-03-17",
+          "refresh_within_days": 180
+        }
+      ],
       "live_proof": []
     },
     {
@@ -228,7 +234,13 @@
       "status": "covered_with_manual_review",
       "impl_refs": ["src/continuity/api.py", "src/continuity/service.py", "docs/architecture.md"],
       "proof_refs": ["tests/test_runtime_mode_contract.py", "tests/test_api.py"],
-      "manual_proof": ["Review deployment-boundary documentation alongside the explicit daemon layout exception in this manifest."],
+      "manual_proof": [
+        {
+          "description": "Review deployment-boundary documentation alongside the explicit daemon layout exception in this manifest.",
+          "last_reviewed_on": "2026-03-17",
+          "refresh_within_days": 180
+        }
+      ],
       "live_proof": []
     },
     {
@@ -382,7 +394,14 @@
       "impl_refs": ["src/continuity/embeddings/ollama.py"],
       "proof_refs": ["tests/test_ollama_embeddings.py"],
       "manual_proof": [],
-      "live_proof": ["Set CONTINUITY_RUN_LIVE_OLLAMA=1 and run tests/test_ollama_embeddings.py to exercise the real local Ollama path."]
+      "live_proof": [
+        {
+          "description": "Exercise the real local Ollama embedding path.",
+          "verification_command": "CONTINUITY_RUN_LIVE_OLLAMA=1 uv run --isolated -p 3.13 --with pytest python -m pytest tests/test_ollama_embeddings.py",
+          "last_verified_on": "2026-03-17",
+          "refresh_within_days": 90
+        }
+      ]
     },
     {
       "id": "3.2",
@@ -391,7 +410,14 @@
       "impl_refs": ["src/continuity/index/zvec_index.py", "src/continuity/index/zvec_smoke.py", "docs/retrieval-backend-bootstrap.md"],
       "proof_refs": ["tests/test_zvec_index.py", "tests/test_packaging_bootstrap.py"],
       "manual_proof": [],
-      "live_proof": ["Follow docs/retrieval-backend-bootstrap.md and run python -m continuity.index.zvec_smoke against a real retrieval-zvec install."]
+      "live_proof": [
+        {
+          "description": "Exercise the real retrieval-zvec backend smoke path documented for Continuity.",
+          "verification_command": "PYTHONPATH=src python -m continuity.index.zvec_smoke --collection-path .tmp/zvec-smoke",
+          "last_verified_on": "2026-03-17",
+          "refresh_within_days": 90
+        }
+      ]
     },
     {
       "id": "3.3",
@@ -409,7 +435,14 @@
       "impl_refs": ["src/continuity/reasoning/codex_adapter.py"],
       "proof_refs": ["tests/test_codex_adapter.py", "tests/reasoning/test_adapter_contract.py"],
       "manual_proof": [],
-      "live_proof": ["Set CONTINUITY_RUN_LIVE_OPENAI=1 and run tests/test_codex_adapter.py with OPENAI_API_KEY set."]
+      "live_proof": [
+        {
+          "description": "Exercise the real Codex/OpenAI adapter round-trip path.",
+          "verification_command": "CONTINUITY_RUN_LIVE_OPENAI=1 OPENAI_API_KEY=... uv run --isolated -p 3.13 --with pytest python -m pytest tests/test_codex_adapter.py",
+          "last_verified_on": "2026-03-17",
+          "refresh_within_days": 90
+        }
+      ]
     },
     {
       "id": "4.2",
@@ -516,7 +549,13 @@
       "status": "covered_with_manual_review",
       "impl_refs": ["docs/architecture.md"],
       "proof_refs": ["tests/test_runtime_mode_contract.py"],
-      "manual_proof": ["Review docs/architecture.md whenever deployment-shell expectations or future adapter guidance change."],
+      "manual_proof": [
+        {
+          "description": "Review docs/architecture.md whenever deployment-shell expectations or future adapter guidance change.",
+          "last_reviewed_on": "2026-03-17",
+          "refresh_within_days": 180
+        }
+      ],
       "live_proof": []
     }
   ]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import unittest
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -67,6 +69,22 @@ class PlanCoverageManifestTests(unittest.TestCase):
             )
             self.assertTrue(explicit_missing[path_text].strip())
 
+    def test_manual_and_live_proofs_include_freshness_metadata(self) -> None:
+        manifest = self._load_manifest()
+        as_of = self._as_of_date()
+
+        for entry in manifest["tasks"]:
+            with self.subTest(task_id=entry["id"]):
+                if entry["status"] == "covered_with_manual_review":
+                    self.assertTrue(entry["manual_proof"], "manual-review tasks must declare manual proof records")
+                if entry["status"] == "covered_with_live_validation":
+                    self.assertTrue(entry["live_proof"], "live-validation tasks must declare live proof records")
+
+                for proof in entry["manual_proof"]:
+                    self._assert_manual_proof_is_fresh(entry_id=entry["id"], proof=proof, as_of=as_of)
+                for proof in entry["live_proof"]:
+                    self._assert_live_proof_is_fresh(entry_id=entry["id"], proof=proof, as_of=as_of)
+
     def _load_manifest(self) -> dict[str, object]:
         self.assertTrue(
             MANIFEST_PATH.exists(),
@@ -83,6 +101,46 @@ class PlanCoverageManifestTests(unittest.TestCase):
         self.assertIsNotNone(match, "continuity-plan.md should contain a Proposed Layout section")
         body = match.group("body")
         return [layout_match.group(1) for layout_match in LAYOUT_ENTRY_PATTERN.finditer(body)]
+
+    def _as_of_date(self) -> date:
+        raw = os.environ.get("CONTINUITY_PLAN_COVERAGE_AS_OF")
+        if raw:
+            return date.fromisoformat(raw)
+        return date.today()
+
+    def _assert_manual_proof_is_fresh(self, *, entry_id: str, proof: object, as_of: date) -> None:
+        self.assertIsInstance(proof, dict, f"{entry_id} manual proof entries must be structured objects")
+        assert isinstance(proof, dict)
+        self.assertTrue(str(proof.get("description", "")).strip(), f"{entry_id} manual proof requires description")
+        self.assertIn("last_reviewed_on", proof, f"{entry_id} manual proof requires last_reviewed_on")
+        self.assertIn("refresh_within_days", proof, f"{entry_id} manual proof requires refresh_within_days")
+        reviewed_on = date.fromisoformat(str(proof["last_reviewed_on"]))
+        refresh_within_days = int(proof["refresh_within_days"])
+        self.assertGreater(refresh_within_days, 0, f"{entry_id} manual proof refresh window must be positive")
+        self.assertLessEqual(
+            as_of,
+            reviewed_on + timedelta(days=refresh_within_days),
+            f"{entry_id} manual proof is stale as of {as_of.isoformat()}",
+        )
+
+    def _assert_live_proof_is_fresh(self, *, entry_id: str, proof: object, as_of: date) -> None:
+        self.assertIsInstance(proof, dict, f"{entry_id} live proof entries must be structured objects")
+        assert isinstance(proof, dict)
+        self.assertTrue(str(proof.get("description", "")).strip(), f"{entry_id} live proof requires description")
+        self.assertTrue(
+            str(proof.get("verification_command", "")).strip(),
+            f"{entry_id} live proof requires verification_command",
+        )
+        self.assertIn("last_verified_on", proof, f"{entry_id} live proof requires last_verified_on")
+        self.assertIn("refresh_within_days", proof, f"{entry_id} live proof requires refresh_within_days")
+        verified_on = date.fromisoformat(str(proof["last_verified_on"]))
+        refresh_within_days = int(proof["refresh_within_days"])
+        self.assertGreater(refresh_within_days, 0, f"{entry_id} live proof refresh window must be positive")
+        self.assertLessEqual(
+            as_of,
+            verified_on + timedelta(days=refresh_within_days),
+            f"{entry_id} live proof is stale as of {as_of.isoformat()}",
+        )
 
 
 if __name__ == "__main__":
