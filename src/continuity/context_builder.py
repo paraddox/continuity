@@ -6,11 +6,12 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Any
 
+from continuity.arbiter import ArbiterPublicationKind, MutationArbiter
 from continuity.config import normalize_recall_mode
 from continuity.disclosure import (
     DisclosureAction,
@@ -20,6 +21,7 @@ from continuity.disclosure import (
     evaluate_disclosure,
 )
 from continuity.epistemics import EpistemicStatus, answer_mode_for_status, resolve_locus_belief
+from continuity.events import SystemEventType
 from continuity.forgetting import ForgettingTarget, ForgettingTargetKind
 from continuity.index.zvec_index import (
     EmbeddingClientProtocol,
@@ -45,6 +47,15 @@ from continuity.service import (
     ServiceResponse,
 )
 from continuity.reasoning.base import AnswerQueryRequest, ReasoningAdapter, ReasoningMessage
+from continuity.replay import (
+    ReplayArtifact,
+    ReplayInputBundle,
+    ReplayMetric,
+    ReplayRun,
+    ReplayStep,
+    ReplayStrategy,
+)
+from continuity.store.replay import ReplayRepository
 from continuity.store.belief_revision import BeliefStateRepository, StoredBeliefState
 from continuity.store.claims import (
     AdmissionOutcome,
@@ -57,6 +68,11 @@ from continuity.store.claims import (
     SubjectKind,
 )
 from continuity.store.sqlite import SQLiteRepository
+from continuity.transactions import (
+    DurabilityWaterline,
+    TransactionKind,
+    TransactionPhase,
+)
 from continuity.utility import CompiledUtilityWeight
 from continuity.views import CompiledView, ViewKind
 
@@ -138,6 +154,7 @@ class SubjectResolution:
 class AssembledView:
     compiled_view: CompiledView
     payload: dict[str, object]
+    capture_payload: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +182,7 @@ class ContinuityContextBuilder:
     ) -> None:
         self._connection = connection
         self._repository = SQLiteRepository(connection)
+        self._replay = ReplayRepository(connection)
         self._beliefs = BeliefStateRepository(connection)
         self._policy = get_policy_pack(_clean_text(policy_name, field_name="policy_name"))
         self._reasoning_adapter = reasoning_adapter
@@ -596,6 +614,12 @@ class ContinuityContextBuilder:
             subject_id=session_subject_id,
             surface=ResolutionSurface.PROMPT_QUEUE,
         )
+        source_views = (state_views[0], profile_view, evidence_view, *timeline_views)
+        prompt_candidate_ids = tuple(
+            entry["entry_id"]
+            for entry in auxiliary_prompt_memory
+            if entry["entry_kind"] == "prompt_only"
+        )
 
         return AssembledView(
             compiled_view=CompiledView(
@@ -630,6 +654,67 @@ class ContinuityContextBuilder:
                 "auxiliary_prompt_memory": auxiliary_prompt_memory,
                 "follow_ups": follow_ups,
             },
+            capture_payload={
+                "selection": {
+                    "selected_claim_ids": claim_ids,
+                    "source_compiled_views": tuple(
+                        self._capture_view_summary(source_view)
+                        for source_view in source_views
+                    ),
+                },
+                "prompt_packing": {
+                    "included_fragments": tuple(
+                        {
+                            "fragment_id": fragment.fragment_id,
+                            "source_view": fragment.source_view.value,
+                            "claim_ids": fragment.claim_ids,
+                            "observation_ids": fragment.observation_ids,
+                            "selection_reason": fragment.selection_reason,
+                            "disclosure_action": fragment.disclosure_action.value,
+                            "epistemic_action": fragment.epistemic_action.value,
+                            "degradation_reason": fragment.degradation_reason,
+                        }
+                        for fragment in prompt_plan.included_fragments
+                    ),
+                    "excluded_fragments": tuple(
+                        {
+                            "fragment_id": fragment.fragment_id,
+                            "source_view": fragment.source_view.value,
+                            "reason": fragment.reason,
+                            "claim_ids": fragment.claim_ids,
+                        }
+                        for fragment in prompt_plan.excluded_fragments
+                    ),
+                    "token_estimate": prompt_plan.token_estimate,
+                    "model_text": "\n".join(
+                        fragment.text for fragment in prompt_plan.included_fragments
+                    ),
+                },
+                "admission": {
+                    "candidate_ids": prompt_candidate_ids,
+                    "decisions": self._admission_decisions_for_candidate_ids(
+                        prompt_candidate_ids
+                    ),
+                },
+                "resolution_queue": {
+                    "surfaced_items": follow_ups,
+                },
+                "disclosure": {
+                    "fragment_actions": tuple(
+                        {
+                            "fragment_id": fragment.fragment_id,
+                            "action": fragment.disclosure_action.value,
+                            "reason": fragment.disclosure_reason,
+                        }
+                        for fragment in prompt_plan.included_fragments
+                    ),
+                    "withheld_claim_ids": (),
+                },
+                "utility_events": self._prompt_utility_events(
+                    prompt_plan=prompt_plan,
+                    follow_ups=follow_ups,
+                ),
+            },
         )
 
     def build_answer_view(
@@ -647,16 +732,14 @@ class ContinuityContextBuilder:
         )
         subject = self._subject(resolved_subject_id)
         snapshot_id = self._resolve_snapshot_id(target_snapshot_id)
-        relevant_views = tuple(
-            result.view
-            for result in self.search(
-                query_text=cleaned_question,
-                disclosure_context=disclosure_context,
-                target_snapshot_id=snapshot_id,
-                limit=4,
-                subject_id=resolved_subject_id,
-            )
+        search_results = self.search(
+            query_text=cleaned_question,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=snapshot_id,
+            limit=4,
+            subject_id=resolved_subject_id,
         )
+        relevant_views = tuple(result.view for result in search_results)
         if not relevant_views:
             relevant_views = self._fallback_answer_views(
                 subject_id=resolved_subject_id,
@@ -705,7 +788,7 @@ class ContinuityContextBuilder:
             disclosure_result = "unknown"
             primary_status = EpistemicStatus.UNKNOWN
 
-        answer_text = self._answer_text(
+        answer_text, reasoning_envelope = self._answer_response(
             question=cleaned_question,
             subject=subject,
             current_beliefs=current_beliefs,
@@ -743,6 +826,52 @@ class ContinuityContextBuilder:
                 "current_beliefs": current_beliefs,
                 "historical_context": historical_context,
                 "citations": citations,
+            },
+            capture_payload={
+                "retrieval": {
+                    "query_text": cleaned_question,
+                    "subject_id": resolved_subject_id,
+                    "limit": 4,
+                    "candidates": tuple(
+                        {
+                            "view_key": result.view.compiled_view.view_key,
+                            "view_kind": result.view.compiled_view.kind.value,
+                            "score": round(result.score, 6),
+                            "source_kind": result.source_kind.value,
+                            "record_id": result.record_id,
+                            "excerpt": result.excerpt,
+                            "claim_ids": result.view.compiled_view.claim_ids,
+                            "observation_ids": result.view.compiled_view.observation_ids,
+                        }
+                        for result in search_results
+                    ),
+                },
+                "selection": {
+                    "selected_claim_ids": claim_ids,
+                    "selected_beliefs": current_beliefs,
+                    "historical_beliefs": historical_context,
+                    "source_compiled_views": tuple(
+                        self._capture_view_summary(view)
+                        for view in relevant_views
+                    ),
+                },
+                "disclosure": {
+                    "result": disclosure_result,
+                    "hidden_claim_ids": hidden_claim_ids,
+                    "claim_decisions": self._claim_disclosure_payloads(
+                        visible_claim_ids or hidden_claim_ids,
+                        disclosure_context=disclosure_context,
+                    ),
+                },
+                "reasoning": reasoning_envelope,
+                "utility_events": tuple(
+                    {
+                        "kind": "answer_citation",
+                        "claim_id": citation["claim_id"],
+                    }
+                    for citation in citations
+                    if isinstance(citation.get("claim_id"), str)
+                ),
             },
         )
 
@@ -853,6 +982,7 @@ class ContinuityContextBuilder:
             ServiceOperation.LIST_MEMORY_FOLLOW_UPS: self._execute_follow_ups,
             ServiceOperation.RESOLVE_SUBJECT: self._execute_resolve_subject,
             ServiceOperation.INSPECT_EVIDENCE: self._execute_evidence_view,
+            ServiceOperation.INSPECT_TURN_DECISION: self._execute_turn_decision_inspection,
         }
 
     def _execute_search(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -885,9 +1015,11 @@ class ContinuityContextBuilder:
             disclosure_context=request.request.disclosure_context,
             target_snapshot_id=request.request.target_snapshot_id,
         )
+        artifact_id = self._capture_view_artifact(request=request, view=view)
         return ServiceResponse(
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
+            replay_artifact_ids=() if artifact_id is None else (artifact_id,),
         )
 
     def _execute_timeline_view(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -901,9 +1033,11 @@ class ContinuityContextBuilder:
             disclosure_context=request.request.disclosure_context,
             target_snapshot_id=request.request.target_snapshot_id,
         )
+        artifact_id = self._capture_view_artifact(request=request, view=view)
         return ServiceResponse(
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
+            replay_artifact_ids=() if artifact_id is None else (artifact_id,),
         )
 
     def _execute_profile_view(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -916,9 +1050,11 @@ class ContinuityContextBuilder:
             disclosure_context=request.request.disclosure_context,
             target_snapshot_id=request.request.target_snapshot_id,
         )
+        artifact_id = self._capture_view_artifact(request=request, view=view)
         return ServiceResponse(
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
+            replay_artifact_ids=() if artifact_id is None else (artifact_id,),
         )
 
     def _execute_prompt_view(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -928,9 +1064,11 @@ class ContinuityContextBuilder:
             disclosure_context=request.request.disclosure_context,
             target_snapshot_id=request.request.target_snapshot_id,
         )
+        artifact_id = self._capture_view_artifact(request=request, view=view)
         return ServiceResponse(
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
+            replay_artifact_ids=() if artifact_id is None else (artifact_id,),
         )
 
     def _execute_answer_view(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -941,9 +1079,11 @@ class ContinuityContextBuilder:
             disclosure_context=request.request.disclosure_context,
             target_snapshot_id=request.request.target_snapshot_id,
         )
+        artifact_id = self._capture_view_artifact(request=request, view=view)
         return ServiceResponse(
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
+            replay_artifact_ids=() if artifact_id is None else (artifact_id,),
         )
 
     def _execute_follow_ups(self, request: ResolvedServiceRequest) -> ServiceResponse:
@@ -994,6 +1134,349 @@ class ContinuityContextBuilder:
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
         )
+
+    def _execute_turn_decision_inspection(self, request: ResolvedServiceRequest) -> ServiceResponse:
+        payload = request.request.payload
+        artifact_id = payload.get("artifact_id")
+        run_id = payload.get("run_id")
+        artifact = None if artifact_id is None else self._replay.read_artifact(str(artifact_id))
+        run = None if run_id is None else self._replay.read_run(str(run_id))
+
+        if artifact is None and run is None:
+            raise LookupError("turn decision inspection requires an existing artifact_id or run_id")
+        if artifact is not None and run is None:
+            run = artifact.baseline_run
+        if run is None:
+            raise LookupError("turn decision inspection requires a replay run")
+
+        bundle = run.input_bundle
+        artifact_payload = None
+        if artifact is not None:
+            artifact_payload = {
+                "artifact_id": artifact.artifact_id,
+                "version": artifact.version,
+                "source_transaction": artifact.source_transaction.value,
+                "source_waterline": artifact.source_waterline.value,
+                "phase_boundary": (
+                    None if artifact.phase_boundary is None else artifact.phase_boundary.value
+                ),
+                "captured_at": artifact.captured_at.isoformat(),
+                "source_object_ids": artifact.source_object_ids,
+                "decision_payload": artifact.decision_payload,
+            }
+
+        return ServiceResponse(
+            operation=request.request.operation,
+            payload={
+                "artifact": artifact_payload,
+                "run": {
+                    "run_id": run.run_id,
+                    "policy_fingerprint": run.policy_fingerprint,
+                    "output_refs": run.output_refs,
+                    "metric_scores": {
+                        metric.value: score
+                        for metric, score in run.metric_scores.items()
+                    },
+                },
+                "bundle": {
+                    "bundle_id": bundle.bundle_id,
+                    "surface": bundle.surface,
+                    "snapshot_id": bundle.snapshot_id,
+                    "journal_position": bundle.journal_position,
+                    "arbiter_lane_position": bundle.arbiter_lane_position,
+                    "claim_ids": bundle.claim_ids,
+                    "observation_ids": bundle.observation_ids,
+                    "compiled_view_ids": bundle.compiled_view_ids,
+                    "outcome_ids": bundle.outcome_ids,
+                    "reference_ids": bundle.reference_ids,
+                    "query_text": bundle.query_text,
+                },
+            },
+        )
+
+    def _capture_view_artifact(
+        self,
+        *,
+        request: ResolvedServiceRequest,
+        view: AssembledView,
+    ) -> str:
+        boundary = self._snapshot_boundary(view.compiled_view.snapshot_id)
+        request_payload = {
+            "operation": request.request.operation.value,
+            "request_id": request.request.request_id,
+            "target_snapshot_id": request.request.target_snapshot_id,
+        }
+        selection_payload = {
+            "view_kind": view.compiled_view.kind.value,
+            "view_key": view.compiled_view.view_key,
+            "claim_ids": view.compiled_view.claim_ids,
+            "observation_ids": view.compiled_view.observation_ids,
+        }
+        extra_payload = dict(view.capture_payload)
+        selection_payload.update(
+            dict(extra_payload.pop("selection", {}))
+        )
+        decision_payload: dict[str, object] = {
+            "surface": f"{view.compiled_view.kind.value}_view",
+            "request": request_payload,
+            "boundary": {
+                "snapshot_id": view.compiled_view.snapshot_id,
+                "transaction_kind": boundary["transaction_kind"],
+                "phase_boundary": boundary["phase_boundary"],
+                "waterline": boundary["waterline"],
+                "journal_position": boundary["journal_position"],
+                "arbiter_lane_position": boundary["arbiter_lane_position"],
+                "policy_stamp": view.compiled_view.policy_stamp,
+            },
+            "selection": selection_payload,
+        }
+        decision_payload.update(extra_payload)
+
+        compiled_view_ids = [view.compiled_view.view_key]
+        for source_view in selection_payload.get("source_compiled_views", ()):
+            if isinstance(source_view, Mapping):
+                source_view_key = source_view.get("view_key")
+                if isinstance(source_view_key, str):
+                    compiled_view_ids.append(source_view_key)
+
+        query_text = None
+        retrieval_payload = decision_payload.get("retrieval")
+        if isinstance(retrieval_payload, Mapping):
+            candidate_query = retrieval_payload.get("query_text")
+            if isinstance(candidate_query, str):
+                query_text = candidate_query
+
+        bundle = ReplayInputBundle(
+            bundle_id=f"bundle:{request.request.request_id}",
+            surface=str(decision_payload["surface"]),
+            snapshot_id=view.compiled_view.snapshot_id,
+            journal_position=int(boundary["journal_position"]),
+            arbiter_lane_position=int(boundary["arbiter_lane_position"]),
+            disclosure_context=request.request.disclosure_context,
+            claim_ids=view.compiled_view.claim_ids,
+            observation_ids=view.compiled_view.observation_ids,
+            compiled_view_ids=tuple(dict.fromkeys(compiled_view_ids)),
+            reference_ids=(
+                f"journal:{boundary['journal_position']}",
+                f"arbiter:{boundary['arbiter_lane_position']}",
+                view.compiled_view.snapshot_id,
+            ),
+            query_text=query_text,
+        )
+        run = ReplayRun(
+            run_id=f"run:{request.request.request_id}",
+            input_bundle=bundle,
+            policy_fingerprint=(
+                view.compiled_view.policy_stamp,
+                f"{self._strategy_slug(self._policy.policy_name)}@1",
+            ),
+            strategies=self._replay_strategies_for(view),
+            output_refs=(view.compiled_view.view_key,),
+            metric_scores={metric: 0 for metric in ReplayMetric},
+        )
+        artifact = ReplayArtifact(
+            artifact_id=f"replay:{request.request.request_id}",
+            version="turn_decision_v1",
+            source_transaction=TransactionKind(boundary["transaction_kind"]),
+            source_waterline=DurabilityWaterline(boundary["waterline"]),
+            phase_boundary=TransactionPhase(boundary["phase_boundary"]),
+            captured_at=boundary["recorded_at"],
+            baseline_run=run,
+            source_object_ids=(view.compiled_view.snapshot_id, view.compiled_view.view_key),
+            decision_payload=decision_payload,
+        )
+        self._replay.save_artifact(artifact)
+        return artifact.artifact_id
+
+    def _replay_strategies_for(self, view: AssembledView) -> tuple[ReplayStrategy, ...]:
+        reasoning_payload = view.capture_payload.get("reasoning")
+        reasoning_strategy_id = "reasoning:not_used"
+        if isinstance(reasoning_payload, Mapping):
+            if reasoning_payload.get("used_adapter") is True:
+                adapter_id = reasoning_payload.get("adapter")
+                if isinstance(adapter_id, str) and adapter_id:
+                    reasoning_strategy_id = f"reasoning:{adapter_id}"
+            else:
+                mode = reasoning_payload.get("mode")
+                if isinstance(mode, str) and mode:
+                    reasoning_strategy_id = f"reasoning:{mode}"
+
+        retrieval_strategy_id = (
+            "retrieval:zvec_index"
+            if "retrieval" in view.capture_payload
+            else "retrieval:direct_view"
+        )
+        return (
+            ReplayStrategy(
+                step=ReplayStep.RETRIEVAL,
+                strategy_id=retrieval_strategy_id,
+                fingerprint=f"{retrieval_strategy_id}@1",
+            ),
+            ReplayStrategy(
+                step=ReplayStep.BELIEF,
+                strategy_id="belief:locus_projection",
+                fingerprint="belief:locus_projection@1",
+            ),
+            ReplayStrategy(
+                step=ReplayStep.REASONING,
+                strategy_id=reasoning_strategy_id,
+                fingerprint=f"{reasoning_strategy_id}@1",
+            ),
+        )
+
+    def _snapshot_boundary(self, snapshot_id: str) -> dict[str, object]:
+        boundary_rows = self._connection.execute(
+            """
+            SELECT
+                journal_position,
+                arbiter_lane_position,
+                recorded_at,
+                object_ids_json,
+                reference_ids_json
+            FROM system_events
+            WHERE event_type = ?
+            ORDER BY journal_position DESC
+            """,
+            (SystemEventType.SNAPSHOT_PUBLISHED.value,),
+        ).fetchall()
+        for row in boundary_rows:
+            object_ids = tuple(json.loads(row["object_ids_json"]))
+            reference_ids = tuple(json.loads(row["reference_ids_json"]))
+            if snapshot_id not in object_ids and snapshot_id not in reference_ids:
+                continue
+            return {
+                "transaction_kind": TransactionKind.PUBLISH_SNAPSHOT.value,
+                "phase_boundary": TransactionPhase.PUBLISH_SNAPSHOT.value,
+                "waterline": DurabilityWaterline.SNAPSHOT_PUBLISHED.value,
+                "journal_position": row["journal_position"],
+                "arbiter_lane_position": row["arbiter_lane_position"],
+                "recorded_at": datetime.fromisoformat(row["recorded_at"]),
+            }
+
+        published = MutationArbiter(self._connection).publish(
+            publication_kind=ArbiterPublicationKind.SNAPSHOT_HEAD_PROMOTION,
+            transaction_kind=TransactionKind.PUBLISH_SNAPSHOT,
+            phase=TransactionPhase.PUBLISH_SNAPSHOT,
+            object_ids=(snapshot_id,),
+            published_at=datetime.now(timezone.utc),
+            event_type=SystemEventType.SNAPSHOT_PUBLISHED,
+            reference_ids=(snapshot_id,),
+            snapshot_head_id=f"head:{snapshot_id}",
+            reached_waterline=DurabilityWaterline.SNAPSHOT_PUBLISHED,
+        )
+        return {
+            "transaction_kind": published.publication.transaction_kind.value,
+            "phase_boundary": published.publication.phase.value,
+            "waterline": published.publication.reached_waterline.value,
+            "journal_position": published.event.journal_position,
+            "arbiter_lane_position": published.publication.lane_position,
+            "recorded_at": published.event.recorded_at,
+        }
+
+    @staticmethod
+    def _strategy_slug(value: str) -> str:
+        slug: list[str] = []
+        previous_was_separator = True
+        previous_was_lower_or_digit = False
+        for character in value:
+            if character.isalnum():
+                is_upper = character.isalpha() and character.isupper()
+                if is_upper and previous_was_lower_or_digit and not previous_was_separator:
+                    slug.append("_")
+                slug.append(character.lower())
+                previous_was_separator = False
+                previous_was_lower_or_digit = character.islower() or character.isdigit()
+                continue
+            if not previous_was_separator:
+                slug.append("_")
+                previous_was_separator = True
+            previous_was_lower_or_digit = False
+        return "".join(slug).strip("_") or "unknown"
+
+    def _capture_view_summary(self, view: AssembledView) -> dict[str, object]:
+        return {
+            "view_kind": view.compiled_view.kind.value,
+            "view_key": view.compiled_view.view_key,
+            "claim_ids": view.compiled_view.claim_ids,
+            "observation_ids": view.compiled_view.observation_ids,
+        }
+
+    def _admission_decisions_for_candidate_ids(
+        self,
+        candidate_ids: tuple[str, ...],
+    ) -> tuple[dict[str, object], ...]:
+        decisions: list[dict[str, object]] = []
+        for candidate_id in dict.fromkeys(candidate_ids):
+            trace = self._repository.read_admission_trace(candidate_id)
+            if trace is None:
+                continue
+            decisions.append(
+                {
+                    "candidate_id": trace.decision.candidate_id,
+                    "claim_type": trace.claim_type,
+                    "outcome": trace.decision.outcome.value,
+                    "policy_stamp": trace.policy_stamp,
+                    "rationale": trace.decision.rationale,
+                    "utility_signals": trace.assessment.utility_signals,
+                }
+            )
+        return tuple(decisions)
+
+    def _claim_disclosure_payloads(
+        self,
+        claim_ids: tuple[str, ...],
+        *,
+        disclosure_context: DisclosureContext,
+    ) -> tuple[dict[str, object], ...]:
+        payloads: list[dict[str, object]] = []
+        for claim_id in dict.fromkeys(claim_ids):
+            claim = self._repository.read_claim(claim_id)
+            if claim is None:
+                continue
+            decision = self._claim_disclosure_decision(claim, disclosure_context)
+            payloads.append(
+                {
+                    "claim_id": claim_id,
+                    "action": decision.action.value,
+                    "reason": decision.reason,
+                    "captured_for_replay": decision.captured_for_replay,
+                }
+            )
+        return tuple(payloads)
+
+    def _prompt_utility_events(
+        self,
+        *,
+        prompt_plan: object,
+        follow_ups: tuple[dict[str, str], ...],
+    ) -> tuple[dict[str, object], ...]:
+        events: list[dict[str, object]] = []
+        for fragment in prompt_plan.included_fragments:
+            events.append(
+                {
+                    "kind": "prompt_inclusion",
+                    "fragment_id": fragment.fragment_id,
+                    "claim_ids": fragment.claim_ids,
+                }
+            )
+        for fragment in prompt_plan.excluded_fragments:
+            events.append(
+                {
+                    "kind": "prompt_exclusion",
+                    "fragment_id": fragment.fragment_id,
+                    "reason": fragment.reason,
+                }
+            )
+        for item in follow_ups:
+            events.append(
+                {
+                    "kind": "resolution_follow_up",
+                    "item_id": item["item_id"],
+                    "subject_id": item["subject_id"],
+                    "locus_key": item["locus_key"],
+                }
+            )
+        return tuple(events)
 
     def _answer_subject_id(
         self,
@@ -1158,16 +1641,51 @@ class ContinuityContextBuilder:
         answer_mode: str,
         disclosure_result: str,
     ) -> str:
-        if disclosure_result == "withheld":
-            return "I have relevant memory here, but it is withheld for this audience."
-        if disclosure_result == "unknown":
-            return "I don't know enough to answer that yet."
-        if answer_mode == "ask_confirmation":
-            return "I have related memory, but I need confirmation before I answer decisively."
-        if answer_mode == "abstain":
-            return "I can't answer that confidently from the current memory state."
+        return self._answer_response(
+            question=question,
+            subject=subject,
+            current_beliefs=current_beliefs,
+            historical_context=historical_context,
+            citations=citations,
+            epistemic_status=epistemic_status,
+            answer_mode=answer_mode,
+            disclosure_result=disclosure_result,
+        )[0]
 
-        base_text = self._render_answer_text(
+    def _answer_response(
+        self,
+        *,
+        question: str,
+        subject: Subject,
+        current_beliefs: tuple[dict[str, object], ...],
+        historical_context: tuple[dict[str, object], ...],
+        citations: tuple[dict[str, object], ...],
+        epistemic_status: EpistemicStatus,
+        answer_mode: str,
+        disclosure_result: str,
+    ) -> tuple[str, dict[str, object]]:
+        if disclosure_result == "withheld":
+            return (
+                "I have relevant memory here, but it is withheld for this audience.",
+                {"mode": "withheld", "used_adapter": False},
+            )
+        if disclosure_result == "unknown":
+            return (
+                "I don't know enough to answer that yet.",
+                {"mode": "unknown", "used_adapter": False},
+            )
+        if answer_mode == "ask_confirmation":
+            return (
+                "I have related memory, but I need confirmation before I answer decisively.",
+                {"mode": "ask_confirmation", "used_adapter": False},
+            )
+        if answer_mode == "abstain":
+            return (
+                "I can't answer that confidently from the current memory state.",
+                {"mode": "abstain", "used_adapter": False},
+            )
+
+        base_text, envelope = self._render_answer_response(
             question=question,
             subject=subject,
             current_beliefs=current_beliefs,
@@ -1176,8 +1694,15 @@ class ContinuityContextBuilder:
             epistemic_status=epistemic_status,
         )
         if answer_mode == "qualify":
-            return f"This may be outdated, but {base_text}"
-        return base_text
+            return (
+                f"This may be outdated, but {base_text}",
+                {
+                    **envelope,
+                    "mode": "qualify",
+                    "base_response_text": base_text,
+                },
+            )
+        return base_text, {**envelope, "mode": "assert"}
 
     def _render_answer_text(
         self,
@@ -1189,12 +1714,40 @@ class ContinuityContextBuilder:
         citations: tuple[dict[str, object], ...],
         epistemic_status: EpistemicStatus,
     ) -> str:
+        return self._render_answer_response(
+            question=question,
+            subject=subject,
+            current_beliefs=current_beliefs,
+            historical_context=historical_context,
+            citations=citations,
+            epistemic_status=epistemic_status,
+        )[0]
+
+    def _render_answer_response(
+        self,
+        *,
+        question: str,
+        subject: Subject,
+        current_beliefs: tuple[dict[str, object], ...],
+        historical_context: tuple[dict[str, object], ...],
+        citations: tuple[dict[str, object], ...],
+        epistemic_status: EpistemicStatus,
+    ) -> tuple[str, dict[str, object]]:
         if self._reasoning_adapter is None:
             if current_beliefs:
-                return str(current_beliefs[0]["summary"])
+                return (
+                    str(current_beliefs[0]["summary"]),
+                    {"mode": "fallback", "used_adapter": False},
+                )
             if historical_context:
-                return str(historical_context[0]["summary"])
-            return f"I don't know enough about {subject.canonical_name} to answer that yet."
+                return (
+                    str(historical_context[0]["summary"]),
+                    {"mode": "fallback", "used_adapter": False},
+                )
+            return (
+                f"I don't know enough about {subject.canonical_name} to answer that yet.",
+                {"mode": "fallback", "used_adapter": False},
+            )
 
         request = AnswerQueryRequest(
             query=question,
@@ -1206,7 +1759,19 @@ class ContinuityContextBuilder:
                 epistemic_status=epistemic_status,
             ),
         )
-        return self._reasoning_adapter.answer_query(request).text.strip()
+        response_text = self._reasoning_adapter.answer_query(request).text.strip()
+        return (
+            response_text,
+            {
+                "used_adapter": True,
+                "adapter": self._strategy_slug(self._reasoning_adapter.__class__.__name__),
+                "request_messages": tuple(
+                    {"role": message.role, "content": message.content}
+                    for message in request.messages
+                ),
+                "response_text": response_text,
+            },
+        )
 
     def _answer_reasoning_messages(
         self,

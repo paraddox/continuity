@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
@@ -10,6 +11,7 @@ from continuity.disclosure import DisclosureContext
 from continuity.transactions import (
     DurabilityWaterline,
     TransactionKind,
+    TransactionPhase,
     transaction_contract_for,
 )
 
@@ -44,6 +46,35 @@ def _clean_policy_fingerprint(value: tuple[str, str]) -> tuple[str, str]:
         _clean_text(value[0], field_name="policy_fingerprint"),
         _clean_text(value[1], field_name="policy_fingerprint"),
     )
+
+
+def _normalize_payload_value(value: object, *, field_name: str) -> object:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, StrEnum):
+        return value.value
+    if isinstance(value, tuple | list):
+        return tuple(
+            _normalize_payload_value(item, field_name=field_name)
+            for item in value
+        )
+    if isinstance(value, Mapping):
+        normalized: dict[str, object] = {}
+        for key, nested_value in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{field_name} keys must be strings")
+            normalized[_clean_text(key, field_name=field_name)] = _normalize_payload_value(
+                nested_value,
+                field_name=field_name,
+            )
+        return normalized
+    raise TypeError(f"{field_name} must contain replay-safe payload data")
+
+
+def _normalize_payload_mapping(value: Mapping[str, object]) -> dict[str, object]:
+    normalized = _normalize_payload_value(dict(value), field_name="decision_payload")
+    assert isinstance(normalized, dict)
+    return normalized
 
 
 class ReplayStep(StrEnum):
@@ -228,6 +259,8 @@ class ReplayArtifact:
     captured_at: datetime
     baseline_run: ReplayRun
     source_object_ids: tuple[str, ...]
+    phase_boundary: TransactionPhase | None = None
+    decision_payload: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "artifact_id", _clean_text(self.artifact_id, field_name="artifact_id"))
@@ -242,6 +275,11 @@ class ReplayArtifact:
             "source_object_ids",
             _clean_deduped(self.source_object_ids, field_name="source_object_ids"),
         )
+        object.__setattr__(
+            self,
+            "decision_payload",
+            _normalize_payload_mapping(self.decision_payload),
+        )
 
         if not self.source_object_ids:
             raise ValueError("source_object_ids must be non-empty")
@@ -252,6 +290,13 @@ class ReplayArtifact:
         ):
             raise ValueError(
                 f"{self.source_transaction.value} cannot reach {self.source_waterline.value}"
+            )
+        if (
+            self.phase_boundary is not None
+            and self.phase_boundary not in transaction_contract_for(self.source_transaction).phases
+        ):
+            raise ValueError(
+                f"{self.phase_boundary.value} is not part of {self.source_transaction.value}"
             )
 
     @property

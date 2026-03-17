@@ -48,7 +48,7 @@ from continuity.utility import UtilitySignal
 from continuity.views import ViewKind
 
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -724,6 +724,20 @@ MIGRATIONS: tuple[Migration, ...] = (
             """
             CREATE INDEX idx_replay_comparisons_candidate_run
             ON replay_comparisons(candidate_run_id)
+            """.strip(),
+        ),
+    ),
+    Migration(
+        version=4,
+        name="add_replay_artifact_decision_payloads",
+        statements=(
+            f"""
+            ALTER TABLE replay_artifacts
+            ADD COLUMN phase_boundary TEXT {_enum_check("phase_boundary", TransactionPhase)}
+            """.strip(),
+            """
+            ALTER TABLE replay_artifacts
+            ADD COLUMN decision_payload_json TEXT NOT NULL DEFAULT '{}'
             """.strip(),
         ),
     ),

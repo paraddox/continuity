@@ -26,7 +26,7 @@ from continuity.replay import (
     ReplayStep,
     ReplayStrategy,
 )
-from continuity.transactions import DurabilityWaterline, TransactionKind
+from continuity.transactions import DurabilityWaterline, TransactionKind, TransactionPhase
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -370,20 +370,28 @@ class ReplayRepository:
                     version,
                     source_transaction_kind,
                     source_waterline,
+                    phase_boundary,
                     captured_at,
                     baseline_run_id,
-                    source_object_ids_json
+                    source_object_ids_json,
+                    decision_payload_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     artifact.artifact_id,
                     artifact.version,
                     artifact.source_transaction.value,
                     artifact.source_waterline.value,
+                    (
+                        None
+                        if artifact.phase_boundary is None
+                        else artifact.phase_boundary.value
+                    ),
                     artifact.captured_at.isoformat(),
                     artifact.baseline_run.run_id,
                     _dump_json(list(artifact.source_object_ids)),
+                    _dump_json(artifact.decision_payload),
                 ),
             )
 
@@ -395,9 +403,11 @@ class ReplayRepository:
                 version,
                 source_transaction_kind,
                 source_waterline,
+                phase_boundary,
                 captured_at,
                 baseline_run_id,
-                source_object_ids_json
+                source_object_ids_json,
+                decision_payload_json
             FROM replay_artifacts
             WHERE artifact_id = ?
             """,
@@ -447,9 +457,11 @@ class ReplayRepository:
                         version,
                         source_transaction_kind,
                         source_waterline,
+                        phase_boundary,
                         captured_at,
                         baseline_run_id,
-                        source_object_ids_json
+                        source_object_ids_json,
+                        decision_payload_json
                     FROM replay_artifacts
                     WHERE artifact_id = ?
                     """,
@@ -608,9 +620,15 @@ class ReplayRepository:
             version=row["version"],
             source_transaction=TransactionKind(row["source_transaction_kind"]),
             source_waterline=DurabilityWaterline(row["source_waterline"]),
+            phase_boundary=(
+                None
+                if row["phase_boundary"] is None
+                else TransactionPhase(row["phase_boundary"])
+            ),
             captured_at=_parse_timestamp(row["captured_at"], field_name="captured_at"),
             baseline_run=baseline_run,
             source_object_ids=tuple(_load_json_list(row["source_object_ids_json"])),
+            decision_payload=_load_json_object(row["decision_payload_json"]),
         )
 
     def _comparison_record_from_row(self, row: sqlite3.Row) -> ReplayComparisonRecord:
