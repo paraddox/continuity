@@ -51,6 +51,19 @@ class RecordingResponsesClient:
         return self._responses.pop(0)
 
 
+class FailingOnceResponsesClient:
+    def __init__(self, error: Exception, response: FakeResponse) -> None:
+        self._error = error
+        self._response = response
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> FakeResponse:
+        self.calls.append(kwargs)
+        if len(self.calls) == 1:
+            raise self._error
+        return self._response
+
+
 def sample_messages() -> tuple[ReasoningMessage, ...]:
     return (
         ReasoningMessage(role="user", content="Alice prefers black coffee."),
@@ -71,8 +84,8 @@ class CodexAdapterConfigTests(unittest.TestCase):
         prompt_policy = prompt_policy_for(hermes_v1_policy_pack())
 
         self.assertEqual(prompt_policy.policy_stamp, "hermes_v1@1.0.0")
-        self.assertEqual(prompt_policy.generic_structured_spec.name, "structured.hermes_v1.v1")
-        self.assertEqual(prompt_policy.claim_derivation_spec.name, "claims.hermes_v1.v1")
+        self.assertEqual(prompt_policy.generic_structured_spec.name, "structured_hermes_v1_v1")
+        self.assertEqual(prompt_policy.claim_derivation_spec.name, "claims_hermes_v1_v1")
 
 
 class CodexAdapterTests(unittest.TestCase):
@@ -91,6 +104,7 @@ class CodexAdapterTests(unittest.TestCase):
 
         call = client.calls[-1]
         self.assertEqual(call["model"], "gpt-5.4")
+        self.assertIs(call["store"], False)
         self.assertEqual(call["reasoning"], {"effort": "low"})
         self.assertIn("hermes_v1@1.0.0", str(call["instructions"]))
         self.assertEqual(
@@ -119,6 +133,7 @@ class CodexAdapterTests(unittest.TestCase):
         )
 
         call = client.calls[-1]
+        self.assertIs(call["store"], False)
         self.assertEqual(call["reasoning"], {"effort": "low"})
         self.assertEqual(call["input"][-1], {"role": "user", "content": "Extract the durable memory candidate."})
         self.assertEqual(
@@ -126,7 +141,7 @@ class CodexAdapterTests(unittest.TestCase):
             {
                 "format": {
                     "type": "json_schema",
-                    "name": "structured.hermes_v1.v1",
+                    "name": "structured_hermes_v1_v1",
                     "schema": prompt_policy_for(hermes_v1_policy_pack()).generic_structured_spec.schema,
                     "strict": True,
                 }
@@ -164,6 +179,7 @@ class CodexAdapterTests(unittest.TestCase):
         )
 
         call = client.calls[-1]
+        self.assertIs(call["store"], False)
         self.assertIn("subject_ref", str(call["instructions"]))
         self.assertIn("locus_key", str(call["instructions"]))
         self.assertEqual(
@@ -171,7 +187,7 @@ class CodexAdapterTests(unittest.TestCase):
             {
                 "format": {
                     "type": "json_schema",
-                    "name": "claims.hermes_v1.v1",
+                    "name": "claims_hermes_v1_v1",
                     "schema": prompt_policy_for(hermes_v1_policy_pack()).claim_derivation_spec.schema,
                     "strict": True,
                 }
@@ -189,6 +205,28 @@ class CodexAdapterTests(unittest.TestCase):
                     messages=sample_messages(),
                 )
             )
+
+    def test_structured_generation_retries_without_schema_when_endpoint_rejects_response_format(self) -> None:
+        client = FailingOnceResponsesClient(
+            RuntimeError("Invalid schema for response_format 'claims_hermes_v1_v1'"),
+            FakeResponse('{"payload":{"memory_type":"preference","value":"black coffee"}}'),
+        )
+        adapter = CodexAdapter(client=client, policy_pack=hermes_v1_policy_pack())
+
+        response = adapter.generate_structured(
+            StructuredGenerationRequest(
+                instructions="Extract the durable memory candidate.",
+                messages=sample_messages(),
+            )
+        )
+
+        self.assertEqual(
+            response,
+            RawStructuredOutput(payload={"memory_type": "preference", "value": "black coffee"}),
+        )
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("text", client.calls[0])
+        self.assertNotIn("text", client.calls[1])
 
     def test_default_client_requires_openai_sdk_when_not_injected(self) -> None:
         with self.assertRaises(CodexSDKUnavailableError):

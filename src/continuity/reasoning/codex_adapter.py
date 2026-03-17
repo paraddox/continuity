@@ -129,7 +129,7 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
     policy_slug = _slugify(policy_pack.policy_name)
 
     generic_structured_spec = CodexStructuredSpec(
-        name=f"structured.{policy_slug}.v1",
+        name=f"structured_{policy_slug}_v1",
         payload_key="payload",
         schema={
             "type": "object",
@@ -144,7 +144,7 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
         },
     )
     claim_derivation_spec = CodexStructuredSpec(
-        name=f"claims.{policy_slug}.v1",
+        name=f"claims_{policy_slug}_v1",
         schema={
             "type": "object",
             "properties": {
@@ -203,7 +203,12 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
             "Derive typed candidate memories from the supplied observations. "
             "Every candidate must include claim_type, subject_ref, scope, locus_key, value, and evidence_refs. "
             "Use subject_ref values like observation:0.author when the memory is about an observation author. "
-            "Every candidate must include evidence_refs using observation labels such as observation:0."
+            "Every candidate must include evidence_refs using observation labels such as observation:0. "
+            "Valid scope values are exactly: user, peer, shared, session. "
+            "Do not emit any other scope words such as personal, private, public, or global. "
+            "Valid claim_type values are exactly: preference, biography, relationship, task_state, project_fact, instruction, commitment, open_question, ephemeral_context, assistant_self_model. "
+            "Valid locus_key prefixes are exactly: preference/, biography/, relationship/, task_state/, project_fact/, instruction/, commitment/, open_question/, ephemeral/, assistant/. "
+            "Do not invent new claim_type names or new locus_key namespaces."
         ),
         generic_structured_spec=generic_structured_spec,
         claim_derivation_spec=claim_derivation_spec,
@@ -256,6 +261,7 @@ class CodexAdapter:
     def answer_query(self, request: AnswerQueryRequest) -> TextResponse:
         response = self._client.create(
             model=self.config.model,
+            store=False,
             reasoning={"effort": self.config.reasoning_effort},
             instructions=self.prompt_policy.answer_query_instructions,
             input=self._messages_with_tail(
@@ -266,15 +272,13 @@ class CodexAdapter:
         return TextResponse(text=self._extract_output_text(response))
 
     def generate_structured(self, request: StructuredGenerationRequest) -> RawStructuredOutput:
-        response = self._client.create(
-            model=self.config.model,
-            reasoning={"effort": self.config.reasoning_effort},
+        response = self._create_structured_response(
             instructions=self.prompt_policy.structured_generation_instructions,
-            input=self._messages_with_tail(
+            input_messages=self._messages_with_tail(
                 request.messages,
                 ReasoningMessage(role="user", content=request.instructions),
             ),
-            text=self.prompt_policy.generic_structured_spec.as_text_format(),
+            spec=self.prompt_policy.generic_structured_spec,
         )
         return RawStructuredOutput(
             payload=self._decode_structured_payload(
@@ -286,6 +290,7 @@ class CodexAdapter:
     def summarize_session(self, request: SessionSummaryRequest) -> TextResponse:
         response = self._client.create(
             model=self.config.model,
+            store=False,
             reasoning={"effort": self.config.reasoning_effort},
             instructions=self.prompt_policy.session_summary_instructions,
             input=self._messages_with_tail(
@@ -299,12 +304,10 @@ class CodexAdapter:
         return TextResponse(text=self._extract_output_text(response))
 
     def derive_claims(self, request: ClaimDerivationRequest) -> RawStructuredOutput:
-        response = self._client.create(
-            model=self.config.model,
-            reasoning={"effort": self.config.reasoning_effort},
+        response = self._create_structured_response(
             instructions=self.prompt_policy.claim_derivation_instructions,
-            input=self._messages_to_input(request.observations),
-            text=self.prompt_policy.claim_derivation_spec.as_text_format(),
+            input_messages=self._messages_to_input(request.observations),
+            spec=self.prompt_policy.claim_derivation_spec,
         )
         return RawStructuredOutput(
             payload=self._decode_structured_payload(
@@ -316,6 +319,48 @@ class CodexAdapter:
     @staticmethod
     def _messages_to_input(messages: Sequence[ReasoningMessage]) -> list[dict[str, str]]:
         return [{"role": message.role, "content": message.content} for message in messages]
+
+    def _create_structured_response(
+        self,
+        *,
+        instructions: str,
+        input_messages: Sequence[dict[str, str]],
+        spec: CodexStructuredSpec,
+    ) -> object:
+        request_kwargs = {
+            "model": self.config.model,
+            "store": False,
+            "reasoning": {"effort": self.config.reasoning_effort},
+            "instructions": instructions,
+            "input": list(input_messages),
+            "text": spec.as_text_format(),
+        }
+        try:
+            return self._client.create(**request_kwargs)
+        except Exception as exc:
+            if not self._should_retry_without_schema(exc):
+                raise
+            fallback_instructions = (
+                f"{instructions}\n"
+                "Return only valid JSON matching this schema. "
+                f"Schema: {json.dumps(spec.schema, separators=(',', ':'), sort_keys=True)}"
+            )
+            return self._client.create(
+                model=self.config.model,
+                store=False,
+                reasoning={"effort": self.config.reasoning_effort},
+                instructions=fallback_instructions,
+                input=list(input_messages),
+            )
+
+    @staticmethod
+    def _should_retry_without_schema(exc: Exception) -> bool:
+        text = str(exc).casefold()
+        return (
+            "invalid schema for response_format" in text
+            or "invalid_json_schema" in text
+            or "text.format.schema" in text
+        )
 
     def _messages_with_tail(
         self,

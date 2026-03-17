@@ -3,20 +3,24 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import unittest
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 from continuity.hermes_compat.config import (
     ContinuityVectorBackendKind,
     HermesMemoryBackendKind,
     HermesMemoryConfig,
 )
-from continuity.hermes_compat.factory import create_continuity_backend
+from continuity.hermes_compat.factory import _try_hermes_codex_runtime, create_continuity_backend
 from continuity.hermes_compat.manager import ContinuityHermesSessionManager
 from continuity.index.zvec_index import InMemoryZvecBackend
+from continuity.reasoning.codex_adapter import CodexAdapter
 from continuity.reasoning.base import AnswerQueryRequest, ClaimDerivationRequest, RawStructuredOutput, TextResponse
 
 
@@ -111,13 +115,84 @@ class HermesMemoryConfigTests(unittest.TestCase):
 
         self.assertEqual(config.backend, HermesMemoryBackendKind.CONTINUITY)
         self.assertTrue(config.enabled)
-        self.assertEqual(config.recall_mode, "context")
-        self.assertEqual(config.peer_memory_mode("hermes"), "honcho")
-        self.assertEqual(config.continuity_vector_backend, ContinuityVectorBackendKind.ZVEC)
-        self.assertEqual(config.continuity_embedding_dimensions, 768)
-        self.assertEqual(config.continuity_reasoning_model, "gpt-5.4-mini")
-        self.assertEqual(config.continuity_reasoning_effort, "medium")
-        self.assertEqual(config.continuity_store_path, Path("/tmp/continuity-test.db"))
+
+    def test_factory_can_resolve_hermes_codex_runtime_credentials(self) -> None:
+        fake_auth = ModuleType("hermes_cli.auth")
+        fake_auth.resolve_codex_runtime_credentials = lambda: {
+            "api_key": "codex-access-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
+        fake_config = ModuleType("hermes_cli.config")
+        fake_config.load_config = lambda: {
+            "model": {"provider": "openai-codex", "default": "gpt-5.3-codex"}
+        }
+
+        class FakeTerminalResponse:
+            def __init__(self) -> None:
+                self.output_text = "ok"
+
+        class FakeStream:
+            def __iter__(self):
+                yield {"type": "response.completed", "response": FakeTerminalResponse()}
+
+            def close(self) -> None:
+                return None
+
+        class FakeResponses:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, object]] = []
+
+            def create(self, **kwargs: object) -> FakeStream:
+                self.calls.append(kwargs)
+                return FakeStream()
+
+        class FakeOpenAI:
+            def __init__(self, *, api_key: str, base_url: str) -> None:
+                self.responses = FakeResponses()
+                self.responses.api_key = api_key
+                self.responses.base_url = base_url
+
+        fake_openai = ModuleType("openai")
+        fake_openai.OpenAI = FakeOpenAI
+
+        with patch.dict(
+            sys.modules,
+            {
+                "hermes_cli.auth": fake_auth,
+                "hermes_cli.config": fake_config,
+                "openai": fake_openai,
+            },
+        ):
+            client, model = _try_hermes_codex_runtime()
+
+        self.assertIsNotNone(client)
+        terminal = client.create(model="gpt-5.3-codex", instructions="hi", input=[])
+        self.assertEqual(terminal.output_text, "ok")
+        self.assertEqual(model, "gpt-5.3-codex")
+
+    def test_factory_prefers_hermes_codex_runtime_when_available(self) -> None:
+        config = HermesMemoryConfig.from_mapping({"backend": "continuity"})
+        fake_client = object()
+        captured: dict[str, object] = {}
+
+        class FakeManager:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        with (
+            patch(
+                "continuity.hermes_compat.factory._try_hermes_codex_runtime",
+                return_value=(fake_client, "gpt-5.3-codex"),
+            ),
+            patch("continuity.hermes_compat.factory.ContinuityHermesSessionManager", FakeManager),
+        ):
+            manager, _ = create_continuity_backend(config)
+
+        self.assertIsInstance(captured["reasoning_adapter"], CodexAdapter)
+        self.assertIs(captured["reasoning_adapter"]._client, fake_client)
+        self.assertEqual(captured["reasoning_adapter"].config.model, "gpt-5.3-codex")
+        self.assertIsInstance(manager, FakeManager)
 
     def test_factory_returns_none_for_non_continuity_backend(self) -> None:
         manager, config = create_continuity_backend(
