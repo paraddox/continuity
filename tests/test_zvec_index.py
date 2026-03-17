@@ -9,7 +9,9 @@ import unittest
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
+from unittest.mock import patch
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -310,6 +312,62 @@ class ZvecIndexTests(unittest.TestCase):
             filter_expr,
             "subject_id = 'subject:user:alice' AND (source_kind = 'belief_state' OR source_kind = 'claim')",
         )
+
+    def test_real_backend_opens_existing_collection_path(self) -> None:
+        backend_calls: list[tuple[str, str]] = []
+
+        class FakeCollection:
+            pass
+
+        class FakeZvecModule:
+            class DataType:
+                STRING = "string"
+                VECTOR_FP32 = "vector_fp32"
+
+            class FieldSchema:
+                def __init__(self, name: str, data_type: str, nullable: bool = False) -> None:
+                    self.name = name
+                    self.data_type = data_type
+                    self.nullable = nullable
+
+            class VectorSchema:
+                def __init__(self, name: str, data_type: str, dimensions: int) -> None:
+                    self.name = name
+                    self.data_type = data_type
+                    self.dimensions = dimensions
+
+            class CollectionSchema:
+                def __init__(self, name: str, fields: list[object], vectors: list[object]) -> None:
+                    self.name = name
+                    self.fields = fields
+                    self.vectors = vectors
+
+            @staticmethod
+            def init() -> None:
+                return None
+
+            @staticmethod
+            def create_and_open(path: str, schema: object) -> FakeCollection:
+                backend_calls.append(("create_and_open", path))
+                raise ValueError(f"path validate failed: path[{path}] is existed")
+
+            @staticmethod
+            def open(path: str) -> FakeCollection:
+                backend_calls.append(("open", path))
+                return FakeCollection()
+
+        with TemporaryDirectory() as temp_dir:
+            collection_path = Path(temp_dir) / "continuity-zvec"
+            collection_path.mkdir()
+
+            with patch.dict(sys.modules, {"zvec": FakeZvecModule}):
+                backend = zvec_index_module.ZvecBackend(
+                    collection_path=str(collection_path),
+                    dimensions=768,
+                )
+
+        self.assertIsInstance(backend._collection, FakeCollection)
+        self.assertEqual(backend_calls, [("open", str(collection_path))])
 
     def test_rebuild_from_sqlite_indexes_all_supported_source_kinds(self) -> None:
         connection = open_memory_database()

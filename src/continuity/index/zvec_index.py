@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from math import sqrt
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from continuity.compiler import (
@@ -305,31 +306,34 @@ class ZvecBackend:
         self._zvec = zvec
         if hasattr(self._zvec, "init"):
             self._zvec.init()
-        self._collection = self._zvec.create_and_open(
-            path=cleaned_path,
-            schema=self._zvec.CollectionSchema(
-                name=_clean_text(collection_name, field_name="collection_name"),
-                fields=[
-                    self._zvec.FieldSchema("record_id", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("source_kind", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("source_id", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("subject_id", self._zvec.DataType.STRING, nullable=True),
-                    self._zvec.FieldSchema("locus_key", self._zvec.DataType.STRING, nullable=True),
-                    self._zvec.FieldSchema("policy_stamp", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("document_text", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("embedding_model", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("embedding_fingerprint", self._zvec.DataType.STRING),
-                    self._zvec.FieldSchema("metadata_json", self._zvec.DataType.STRING),
-                ],
-                vectors=[
-                    self._zvec.VectorSchema(
-                        "embedding",
-                        self._zvec.DataType.VECTOR_FP32,
-                        dimensions,
-                    )
-                ],
-            ),
-        )
+        if Path(cleaned_path).exists():
+            self._collection = self._zvec.open(cleaned_path)
+        else:
+            self._collection = self._zvec.create_and_open(
+                path=cleaned_path,
+                schema=self._zvec.CollectionSchema(
+                    name=_clean_text(collection_name, field_name="collection_name"),
+                    fields=[
+                        self._zvec.FieldSchema("record_id", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("source_kind", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("source_id", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("subject_id", self._zvec.DataType.STRING, nullable=True),
+                        self._zvec.FieldSchema("locus_key", self._zvec.DataType.STRING, nullable=True),
+                        self._zvec.FieldSchema("policy_stamp", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("document_text", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("embedding_model", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("embedding_fingerprint", self._zvec.DataType.STRING),
+                        self._zvec.FieldSchema("metadata_json", self._zvec.DataType.STRING),
+                    ],
+                    vectors=[
+                        self._zvec.VectorSchema(
+                            "embedding",
+                            self._zvec.DataType.VECTOR_FP32,
+                            dimensions,
+                        )
+                    ],
+                ),
+            )
 
     def upsert_documents(self, documents: Iterable[IndexedDocument]) -> None:  # pragma: no cover - real backend path
         docs = tuple(documents)
