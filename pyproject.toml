@@ -9,6 +9,9 @@ description = "Local-first memory engine for Hermes continuity."
 requires-python = ">=3.11"
 dependencies = []
 
+[project.scripts]
+continuity = "continuity.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "build",
