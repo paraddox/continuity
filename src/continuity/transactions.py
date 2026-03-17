@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 
@@ -178,6 +179,113 @@ class HostOperationContract:
             )
 
 
+@dataclass(slots=True)
+class TransactionExecutionContext:
+    kind: TransactionKind
+    payload: dict[str, object] = field(default_factory=dict)
+    phase_outputs: dict[TransactionPhase, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionPhaseExecution:
+    phase: TransactionPhase
+    output: object = None
+    reached_waterline: DurabilityWaterline | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TransactionExecution:
+    kind: TransactionKind
+    requested_waterline: DurabilityWaterline | None
+    reached_waterline: DurabilityWaterline | None
+    phase_executions: tuple[TransactionPhaseExecution, ...]
+    deferred_phases: tuple[TransactionPhase, ...] = ()
+
+    @property
+    def executed_phases(self) -> tuple[TransactionPhase, ...]:
+        return tuple(execution.phase for execution in self.phase_executions)
+
+    def phase_execution_for(self, phase: TransactionPhase) -> TransactionPhaseExecution:
+        for execution in self.phase_executions:
+            if execution.phase is phase:
+                return execution
+        raise KeyError(f"{phase.value} was not executed")
+
+
+TransactionPhaseHandler = Callable[[TransactionExecutionContext], object]
+
+
+class TransactionRunner:
+    def __init__(
+        self,
+        phase_handlers: Mapping[TransactionPhase, TransactionPhaseHandler] | None = None,
+    ) -> None:
+        normalized_handlers: dict[TransactionPhase, TransactionPhaseHandler] = {}
+        for phase, handler in (phase_handlers or {}).items():
+            if not isinstance(phase, TransactionPhase):
+                raise TypeError("transaction phase handlers must be keyed by TransactionPhase")
+            if not callable(handler):
+                raise TypeError(f"{phase.value} handler must be callable")
+            normalized_handlers[phase] = handler
+        self._phase_handlers = normalized_handlers
+
+    def run(
+        self,
+        kind: TransactionKind,
+        *,
+        payload: Mapping[str, object] | None = None,
+        requested_waterline: DurabilityWaterline | None = None,
+    ) -> TransactionExecution:
+        contract = transaction_contract_for(kind)
+        if requested_waterline is not None and not contract.supports_waterline(requested_waterline):
+            raise ValueError(f"{kind.value} cannot satisfy {requested_waterline.value}")
+
+        context = TransactionExecutionContext(kind=kind, payload=dict(payload or {}))
+        phase_executions: list[TransactionPhaseExecution] = []
+        reached_waterline: DurabilityWaterline | None = None
+        deferred_phases: tuple[TransactionPhase, ...] = ()
+
+        for index, phase in enumerate(contract.phases):
+            output = self._execute_phase(phase, context)
+            phase_waterline = _waterline_reached_after_phase(contract, phase)
+            if output is not None:
+                context.phase_outputs[phase] = output
+            phase_executions.append(
+                TransactionPhaseExecution(
+                    phase=phase,
+                    output=output,
+                    reached_waterline=phase_waterline,
+                )
+            )
+            if phase_waterline is not None:
+                reached_waterline = phase_waterline
+            if (
+                requested_waterline is not None
+                and reached_waterline is not None
+                and reached_waterline.rank >= requested_waterline.rank
+            ):
+                deferred_phases = tuple(contract.phases[index + 1 :])
+                break
+
+        return TransactionExecution(
+            kind=kind,
+            requested_waterline=requested_waterline,
+            reached_waterline=reached_waterline,
+            phase_executions=tuple(phase_executions),
+            deferred_phases=deferred_phases,
+        )
+
+    def _execute_phase(
+        self,
+        phase: TransactionPhase,
+        context: TransactionExecutionContext,
+    ) -> object:
+        handler = self._phase_handlers.get(phase)
+        if handler is None:
+            return None
+        return handler(context)
+
+
 @lru_cache(maxsize=1)
 def transaction_contracts() -> dict[TransactionKind, TransactionContract]:
     return {
@@ -278,6 +386,26 @@ def transaction_contracts() -> dict[TransactionKind, TransactionContract]:
 
 def transaction_contract_for(kind: TransactionKind) -> TransactionContract:
     return transaction_contracts()[kind]
+
+
+def _waterline_reached_after_phase(
+    contract: TransactionContract,
+    phase: TransactionPhase,
+) -> DurabilityWaterline | None:
+    if phase is TransactionPhase.COMMIT_OBSERVATIONS:
+        return DurabilityWaterline.OBSERVATION_COMMITTED
+    if (
+        phase is TransactionPhase.REVISE_BELIEFS
+        and TransactionPhase.COMMIT_CLAIMS in contract.phases
+    ):
+        return DurabilityWaterline.CLAIM_COMMITTED
+    if phase is TransactionPhase.COMPILE_VIEWS:
+        return DurabilityWaterline.VIEWS_COMPILED
+    if phase is TransactionPhase.PUBLISH_SNAPSHOT:
+        return DurabilityWaterline.SNAPSHOT_PUBLISHED
+    if phase is TransactionPhase.PREFETCH:
+        return DurabilityWaterline.PREFETCH_WARMED
+    return None
 
 
 def write_frequency_policy_for(value: str | int) -> WriteFrequencyPolicy:
