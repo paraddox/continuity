@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +11,7 @@ from enum import StrEnum
 from functools import lru_cache
 
 from continuity.ontology import MemoryClass
+from continuity.outcomes import OutcomeTarget
 from continuity.policy import PolicyPack, hermes_v1_policy_pack
 from continuity.store.claims import AdmissionOutcome
 from continuity.views import TierDefault, ViewKind, view_contracts
@@ -559,3 +562,342 @@ def initial_tier_for_claim_type(
         raise ValueError("tiering begins only after durable admission")
 
     return hermes_v1_tier_policy().claim_tiers[spec.claim_type].initial_tier
+
+
+class TierRuntime:
+    """Apply deterministic, utility-aware tier transitions over stored assignments."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+        self._tiers = TierStateRepository(connection)
+
+    def rebalance_working_set(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+        hot_limit: int,
+        warm_limit: int,
+        transitioned_at: datetime,
+    ) -> tuple[TierTransition, ...]:
+        cleaned_target_kind = _clean_text(target_kind, field_name="target_kind")
+        cleaned_policy_stamp = _clean_text(policy_stamp, field_name="policy_stamp")
+        if hot_limit < 0:
+            raise ValueError("hot_limit must be non-negative")
+        if warm_limit < 0:
+            raise ValueError("warm_limit must be non-negative")
+        if cleaned_target_kind not in {"claim", "compiled_view"}:
+            raise ValueError("rebalance_working_set supports claim and compiled_view targets only")
+
+        ranked_assignments = self._ranked_assignments(
+            target_kind=cleaned_target_kind,
+            policy_stamp=cleaned_policy_stamp,
+        )
+        transitions: list[TierTransition] = []
+        for index, (assignment, score, signal_counts) in enumerate(ranked_assignments):
+            desired_tier = self._desired_working_set_tier(
+                index=index,
+                hot_limit=hot_limit,
+                warm_limit=warm_limit,
+            )
+            if assignment.tier is desired_tier:
+                continue
+            transition = TierTransition(
+                transition_id=self._transition_id_for(
+                    target_kind=assignment.target_kind,
+                    target_id=assignment.target_id,
+                    from_tier=assignment.tier,
+                    to_tier=desired_tier,
+                    transitioned_at=transitioned_at,
+                ),
+                target_kind=assignment.target_kind,
+                target_id=assignment.target_id,
+                policy_stamp=assignment.policy_stamp,
+                from_tier=assignment.tier,
+                to_tier=desired_tier,
+                rationale=self._working_set_rationale(
+                    desired_tier=desired_tier,
+                    score=score,
+                    signal_counts=signal_counts,
+                    hot_limit=hot_limit,
+                    warm_limit=warm_limit,
+                    rank=index,
+                ),
+                transitioned_at=_validate_timestamp(transitioned_at, field_name="transitioned_at"),
+            )
+            self._tiers.record_transition(transition)
+            transitions.append(transition)
+        return tuple(transitions)
+
+    def archive_long_tail(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+        keep_latest: int,
+        transitioned_at: datetime,
+    ) -> tuple[TierTransition, ...]:
+        cleaned_target_kind = _clean_text(target_kind, field_name="target_kind")
+        cleaned_policy_stamp = _clean_text(policy_stamp, field_name="policy_stamp")
+        if keep_latest < 0:
+            raise ValueError("keep_latest must be non-negative")
+
+        archival_tier = hermes_v1_tier_policy().archival_tiers[self._archival_artifact_kind_for(cleaned_target_kind)]
+        assignments = tuple(
+            sorted(
+                self._tiers.list_assignments(
+                    target_kind=cleaned_target_kind,
+                    policy_stamp=cleaned_policy_stamp,
+                ),
+                key=lambda assignment: (
+                    -assignment.assigned_at.timestamp(),
+                    assignment.target_id,
+                ),
+            )
+        )
+
+        transitions: list[TierTransition] = []
+        for index, assignment in enumerate(assignments):
+            if index < keep_latest or assignment.tier is archival_tier:
+                continue
+            transition = TierTransition(
+                transition_id=self._transition_id_for(
+                    target_kind=assignment.target_kind,
+                    target_id=assignment.target_id,
+                    from_tier=assignment.tier,
+                    to_tier=archival_tier,
+                    transitioned_at=transitioned_at,
+                ),
+                target_kind=assignment.target_kind,
+                target_id=assignment.target_id,
+                policy_stamp=assignment.policy_stamp,
+                from_tier=assignment.tier,
+                to_tier=archival_tier,
+                rationale=(
+                    f"archival policy keeps the {keep_latest} newest {cleaned_target_kind} item(s) active; "
+                    f"older long-tail artifacts move to {archival_tier.value} for audit recall"
+                ),
+                transitioned_at=_validate_timestamp(transitioned_at, field_name="transitioned_at"),
+            )
+            self._tiers.record_transition(transition)
+            transitions.append(transition)
+        return tuple(transitions)
+
+    def default_read_metadata(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+        limit: int | None = None,
+    ) -> tuple[RetentionMetadata, ...]:
+        return self._sorted_retention_metadata(
+            target_kind=target_kind,
+            policy_stamp=policy_stamp,
+            tiers=(MemoryTier.HOT, MemoryTier.WARM),
+            limit=limit,
+        )
+
+    def recall_metadata(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+        include_archival: bool = True,
+        limit: int | None = None,
+    ) -> tuple[RetentionMetadata, ...]:
+        tiers = (MemoryTier.COLD, MemoryTier.FROZEN) if include_archival else (MemoryTier.COLD,)
+        return self._sorted_retention_metadata(
+            target_kind=target_kind,
+            policy_stamp=policy_stamp,
+            tiers=tiers,
+            limit=limit,
+        )
+
+    def _ranked_assignments(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+    ) -> tuple[tuple[TierAssignment, int, tuple[tuple[str, int], ...]], ...]:
+        assignments = self._tiers.list_assignments(
+            target_kind=target_kind,
+            policy_stamp=policy_stamp,
+        )
+        ranked = [
+            (
+                assignment,
+                *self._utility_snapshot_for(
+                    target_kind=target_kind,
+                    target_id=assignment.target_id,
+                    policy_stamp=policy_stamp,
+                ),
+            )
+            for assignment in assignments
+        ]
+        ranked.sort(
+            key=lambda item: (
+                -item[1],
+                -item[0].assigned_at.timestamp(),
+                item[0].target_id,
+            )
+        )
+        return tuple(ranked)
+
+    def _sorted_retention_metadata(
+        self,
+        *,
+        target_kind: str,
+        policy_stamp: str,
+        tiers: tuple[MemoryTier, ...],
+        limit: int | None,
+    ) -> tuple[RetentionMetadata, ...]:
+        cleaned_target_kind = _clean_text(target_kind, field_name="target_kind")
+        cleaned_policy_stamp = _clean_text(policy_stamp, field_name="policy_stamp")
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
+
+        metadata = list(
+            self._tiers.list_retention_metadata(
+                target_kind=cleaned_target_kind,
+                policy_stamp=cleaned_policy_stamp,
+                tiers=tiers,
+            )
+        )
+        metadata.sort(
+            key=lambda item: (
+                self._tier_sort_key(item.tier),
+                -self._utility_snapshot_for(
+                    target_kind=cleaned_target_kind,
+                    target_id=item.target_id,
+                    policy_stamp=cleaned_policy_stamp,
+                )[0],
+                -item.assigned_at.timestamp(),
+                item.target_id,
+            )
+        )
+        if limit is not None:
+            metadata = metadata[:limit]
+        return tuple(metadata)
+
+    @staticmethod
+    def _desired_working_set_tier(
+        *,
+        index: int,
+        hot_limit: int,
+        warm_limit: int,
+    ) -> MemoryTier:
+        if index < hot_limit:
+            return MemoryTier.HOT
+        if index < hot_limit + warm_limit:
+            return MemoryTier.WARM
+        return MemoryTier.COLD
+
+    @staticmethod
+    def _tier_sort_key(tier: MemoryTier) -> int:
+        return {
+            MemoryTier.HOT: 0,
+            MemoryTier.WARM: 1,
+            MemoryTier.COLD: 2,
+            MemoryTier.FROZEN: 3,
+        }[tier]
+
+    @staticmethod
+    def _archival_artifact_kind_for(target_kind: str) -> ArchivalArtifactKind:
+        mapping = {
+            "replay_artifact": ArchivalArtifactKind.REPLAY_RECORD,
+            "snapshot_history": ArchivalArtifactKind.SNAPSHOT_HISTORY,
+            "evaluation_result": ArchivalArtifactKind.EVALUATION_RESULT,
+        }
+        try:
+            return mapping[target_kind]
+        except KeyError as exc:
+            raise ValueError("archive_long_tail supports replay_artifact, snapshot_history, and evaluation_result targets only") from exc
+
+    def _utility_snapshot_for(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+        policy_stamp: str,
+    ) -> tuple[int, tuple[tuple[str, int], ...]]:
+        target = {
+            "claim": OutcomeTarget.CLAIM,
+            "compiled_view": OutcomeTarget.COMPILED_VIEW,
+        }.get(target_kind)
+        if target is None:
+            return (0, ())
+
+        row = self._connection.execute(
+            """
+            SELECT weighted_score, signal_counts_json
+            FROM compiled_utility_weights
+            WHERE target = ? AND target_id = ? AND policy_stamp = ?
+            """,
+            (
+                target.value,
+                _clean_text(target_id, field_name="target_id"),
+                _clean_text(policy_stamp, field_name="policy_stamp"),
+            ),
+        ).fetchone()
+        if row is None:
+            return (0, ())
+        signal_counts = json.loads(row[1])
+        if not isinstance(signal_counts, dict):
+            raise ValueError("signal_counts_json must decode to an object")
+        normalized_counts = tuple(
+            (str(signal), int(count))
+            for signal, count in sorted(signal_counts.items())
+        )
+        return (int(row[0]), normalized_counts)
+
+    def _working_set_rationale(
+        self,
+        *,
+        desired_tier: MemoryTier,
+        score: int,
+        signal_counts: tuple[tuple[str, int], ...],
+        hot_limit: int,
+        warm_limit: int,
+        rank: int,
+    ) -> str:
+        if signal_counts:
+            signal_text = ", ".join(f"{signal}={count}" for signal, count in signal_counts)
+        else:
+            signal_text = "no utility signals"
+
+        if desired_tier is MemoryTier.HOT:
+            return (
+                f"utility score {score} ({signal_text}) places this target within the hot working set "
+                f"{rank + 1}/{hot_limit}"
+            )
+        if desired_tier is MemoryTier.WARM:
+            return (
+                f"utility score {score} ({signal_text}) places this target within the warm working set "
+                f"{rank - hot_limit + 1}/{warm_limit} after the hot budget"
+            )
+        return (
+            f"utility score {score} ({signal_text}) falls outside the hot/warm working sets "
+            "and remains recallable cold"
+        )
+
+    @staticmethod
+    def _transition_id_for(
+        *,
+        target_kind: str,
+        target_id: str,
+        from_tier: MemoryTier,
+        to_tier: MemoryTier,
+        transitioned_at: datetime,
+    ) -> str:
+        digest = hashlib.sha256(
+            "|".join(
+                (
+                    _clean_text(target_kind, field_name="target_kind"),
+                    _clean_text(target_id, field_name="target_id"),
+                    from_tier.value,
+                    to_tier.value,
+                    _validate_timestamp(transitioned_at, field_name="transitioned_at").isoformat(),
+                )
+            ).encode("utf-8")
+        ).hexdigest()[:20]
+        return f"tier-transition:{digest}"

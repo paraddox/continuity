@@ -46,6 +46,7 @@ from continuity.service import (
     ServiceOperation,
     ServiceResponse,
 )
+from continuity.tiers import TierStateRepository
 from continuity.reasoning.base import AnswerQueryRequest, ReasoningAdapter, ReasoningMessage
 from continuity.replay import (
     ReplayArtifact,
@@ -184,6 +185,7 @@ class ContinuityContextBuilder:
         self._repository = SQLiteRepository(connection)
         self._replay = ReplayRepository(connection)
         self._beliefs = BeliefStateRepository(connection)
+        self._tiers = TierStateRepository(connection)
         self._policy = get_policy_pack(_clean_text(policy_name, field_name="policy_name"))
         self._reasoning_adapter = reasoning_adapter
         self._index = ZvecIndex(
@@ -472,6 +474,7 @@ class ContinuityContextBuilder:
         subject_id: str,
         disclosure_context: DisclosureContext,
         target_snapshot_id: str | None = None,
+        default_read_tiers_only: bool = False,
     ) -> AssembledView:
         subject = self._subject(subject_id)
         states = self._beliefs.list_states(subject_id=subject_id, policy_stamp=self._policy.policy_stamp)
@@ -496,6 +499,8 @@ class ContinuityContextBuilder:
                         target_snapshot_id=target_snapshot_id,
                     )
             except LookupError:
+                continue
+            if default_read_tiers_only and not self._view_in_default_host_reads(view):
                 continue
             assembled_entries.append(
                 (
@@ -564,11 +569,15 @@ class ContinuityContextBuilder:
             subject_id=session_subject_id,
             disclosure_context=disclosure_context,
             target_snapshot_id=target_snapshot_id,
+            default_read_tiers_only=True,
         )
+        if not state_views:
+            raise LookupError(f"no prompt-eligible state views remain for {session_subject_id}")
         profile_view = self.build_profile_view(
             subject_id=session_subject_id,
             disclosure_context=disclosure_context,
             target_snapshot_id=target_snapshot_id,
+            default_read_tiers_only=True,
         )
         evidence_view = self.build_evidence_view(
             target_kind="claim",
@@ -582,6 +591,7 @@ class ContinuityContextBuilder:
                 subject_id=session_subject_id,
                 disclosure_context=disclosure_context,
                 target_snapshot_id=target_snapshot_id,
+                default_read_tiers_only=True,
             )
         )
 
@@ -2033,6 +2043,7 @@ class ContinuityContextBuilder:
         subject_id: str,
         disclosure_context: DisclosureContext,
         target_snapshot_id: str | None,
+        default_read_tiers_only: bool = False,
     ) -> tuple[AssembledView, ...]:
         views: list[tuple[int, str, AssembledView]] = []
         for state in self._beliefs.list_states(subject_id=subject_id, policy_stamp=self._policy.policy_stamp):
@@ -2048,6 +2059,8 @@ class ContinuityContextBuilder:
                     target_snapshot_id=self._resolve_snapshot_id(target_snapshot_id),
                 )
             except LookupError:
+                continue
+            if default_read_tiers_only and not self._view_in_default_host_reads(view):
                 continue
             views.append(
                 (
@@ -2067,6 +2080,7 @@ class ContinuityContextBuilder:
         subject_id: str,
         disclosure_context: DisclosureContext,
         target_snapshot_id: str | None,
+        default_read_tiers_only: bool = False,
     ) -> tuple[AssembledView, ...]:
         views: list[tuple[int, str, AssembledView]] = []
         for state in self._beliefs.list_states(subject_id=subject_id, policy_stamp=self._policy.policy_stamp):
@@ -2081,6 +2095,8 @@ class ContinuityContextBuilder:
                     target_snapshot_id=target_snapshot_id,
                 )
             except LookupError:
+                continue
+            if default_read_tiers_only and not self._view_in_default_host_reads(view):
                 continue
             views.append(
                 (
@@ -2233,6 +2249,22 @@ class ContinuityContextBuilder:
             target_id=claim_id,
             policy_stamp=self._policy.policy_stamp,
         )
+
+    def _view_in_default_host_reads(self, view: AssembledView) -> bool:
+        return any(
+            self._claim_in_default_host_reads(claim_id)
+            for claim_id in view.compiled_view.claim_ids
+        )
+
+    def _claim_in_default_host_reads(self, claim_id: str) -> bool:
+        metadata = self._tiers.read_retention_metadata(
+            target_kind="claim",
+            target_id=claim_id,
+            policy_stamp=self._policy.policy_stamp,
+        )
+        if metadata is None:
+            return True
+        return metadata.default_in_host_reads
 
     def _retrieval_rank_for_claim_ids(self, claim_ids: tuple[str, ...]) -> int:
         ranks: list[int] = []

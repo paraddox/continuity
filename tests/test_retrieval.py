@@ -85,6 +85,7 @@ from continuity.store.sqlite import (
     SessionRecord,
     StoredDisclosurePolicy,
 )
+from continuity.tiers import MemoryTier, TierAssignment, TierStateRepository
 from continuity.utility import CompiledUtilityWeight
 from continuity.views import ViewKind
 
@@ -956,6 +957,69 @@ class ContinuityRetrievalTests(unittest.TestCase):
                 },
             ),
         )
+
+    def test_prompt_view_filters_cold_claims_from_default_host_reads(self) -> None:
+        builder, connection = self.build_builder()
+        self.addCleanup(connection.close)
+
+        tiers = TierStateRepository(connection)
+        for claim_id in (
+            "claim-latte",
+            "claim-espresso",
+            "claim-oolong",
+            "claim-task-draft",
+            "claim-task-review",
+        ):
+            tiers.upsert_assignment(
+                TierAssignment(
+                    target_kind="claim",
+                    target_id=claim_id,
+                    policy_stamp="hermes_v1@1.0.0",
+                    tier=MemoryTier.COLD,
+                    rationale="seeded cold for prompt filtering",
+                    assigned_at=sample_time(11),
+                )
+            )
+        for claim_id in ("claim-python", "claim-rust"):
+            tiers.upsert_assignment(
+                TierAssignment(
+                    target_kind="claim",
+                    target_id=claim_id,
+                    policy_stamp="hermes_v1@1.0.0",
+                    tier=MemoryTier.WARM,
+                    rationale="seeded warm for prompt filtering",
+                    assigned_at=sample_time(11),
+                )
+            )
+
+        prompt_view = builder.build_prompt_view(
+            session_id="session:hermes:test",
+            disclosure_context=assistant_context(
+                channel=DisclosureChannel.PROMPT,
+                purpose=DisclosurePurpose.PROMPT,
+            ),
+            target_snapshot_id="snapshot-1",
+            recall_mode="hybrid",
+        )
+
+        included_fragment_ids = prompt_view.payload["prompt_plan"]["included_fragment_ids"]
+        self.assertEqual(
+            included_fragment_ids[:2],
+            (
+                "set:subject:user:alice:biography/languages",
+                "profile:subject:user:alice",
+            ),
+        )
+        self.assertIn(
+            included_fragment_ids[2],
+            {
+                "evidence:claim:claim-python",
+                "evidence:claim:claim-rust",
+            },
+        )
+        self.assertEqual(prompt_view.payload["prompt_plan"]["excluded_fragments"], {})
+        self.assertNotIn("favorite_drink", prompt_view.payload["prompt_plan"]["model_text"])
+        self.assertNotIn("reviewing", prompt_view.payload["prompt_plan"]["model_text"])
 
     def test_service_executors_expose_transport_neutral_retrieval_payloads(self) -> None:
         builder, connection = self.build_builder()
