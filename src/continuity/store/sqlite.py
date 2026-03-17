@@ -12,6 +12,7 @@ from continuity.admission import AdmissionDecisionTrace, AdmissionRepository
 from continuity.forgetting import ForgettingRecord, ForgettingRepository, ForgettingTarget
 from continuity.outcomes import OutcomeTarget
 from continuity.resolution_queue import ResolutionQueueRepository, ResolutionQueueItem, ResolutionSurface
+from continuity.store.replay import ReplayRepository
 from continuity.store.claims import (
     AggregationMode,
     CandidateMemory,
@@ -183,6 +184,7 @@ class SQLiteRepository:
         self._connection.row_factory = sqlite3.Row
         self.admissions = AdmissionRepository(connection)
         self.forgetting = ForgettingRepository(connection)
+        self.replay = ReplayRepository(connection)
         self.resolution_queue = ResolutionQueueRepository(connection)
 
     def save_disclosure_policy(self, policy: StoredDisclosurePolicy) -> None:

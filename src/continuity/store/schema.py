@@ -48,7 +48,7 @@ from continuity.utility import UtilitySignal
 from continuity.views import ViewKind
 
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,6 +697,33 @@ MIGRATIONS: tuple[Migration, ...] = (
             """
             CREATE INDEX idx_resolution_queue_session_priority
             ON resolution_queue_items(session_id, status, priority, created_at)
+            """.strip(),
+        ),
+    ),
+    Migration(
+        version=3,
+        name="add_replay_comparisons",
+        statements=(
+            f"""
+            CREATE TABLE replay_comparisons (
+                comparison_id TEXT PRIMARY KEY,
+                baseline_run_id TEXT NOT NULL REFERENCES replay_runs(run_id) ON DELETE CASCADE,
+                candidate_run_id TEXT NOT NULL REFERENCES replay_runs(run_id) ON DELETE CASCADE,
+                mutation_mode TEXT NOT NULL {_enum_check("mutation_mode", ReplayMutationMode)},
+                compared_steps_json TEXT NOT NULL DEFAULT '[]',
+                rationale TEXT NOT NULL,
+                metric_deltas_json TEXT NOT NULL DEFAULT '{{}}',
+                notes_json TEXT NOT NULL DEFAULT '[]',
+                compared_at TEXT NOT NULL
+            )
+            """.strip(),
+            """
+            CREATE INDEX idx_replay_comparisons_baseline_run
+            ON replay_comparisons(baseline_run_id)
+            """.strip(),
+            """
+            CREATE INDEX idx_replay_comparisons_candidate_run
+            ON replay_comparisons(candidate_run_id)
             """.strip(),
         ),
     ),

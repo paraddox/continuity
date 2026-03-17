@@ -103,6 +103,7 @@ class SchemaMigrationTests(unittest.TestCase):
                 "replay_runs",
                 "replay_run_strategies",
                 "replay_artifacts",
+                "replay_comparisons",
                 "tier_assignments",
                 "tier_transitions",
                 "prefetch_state",

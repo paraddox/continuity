@@ -19,6 +19,7 @@ from .claims import (
     SubjectMergeRecord,
     SubjectSplitRecord,
 )
+from .replay import ReplayComparisonRecord, ReplayRepository
 
 __all__ = [
     "AdmissionDecision",
@@ -38,4 +39,6 @@ __all__ = [
     "SubjectKind",
     "SubjectMergeRecord",
     "SubjectSplitRecord",
+    "ReplayComparisonRecord",
+    "ReplayRepository",
 ]
