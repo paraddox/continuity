@@ -196,6 +196,62 @@ class StoredMemoryLocus:
         object.__setattr__(self, "locus_id", _clean_text(self.locus_id, field_name="locus_id"))
 
 
+@dataclass(frozen=True, slots=True)
+class ImportRunRecord:
+    import_run_id: str
+    source_kind: str
+    source_ref: str
+    policy_stamp: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "import_run_id", _clean_text(self.import_run_id, field_name="import_run_id"))
+        object.__setattr__(self, "source_kind", _clean_text(self.source_kind, field_name="source_kind"))
+        object.__setattr__(self, "source_ref", _clean_text(self.source_ref, field_name="source_ref"))
+        object.__setattr__(self, "policy_stamp", _clean_text(self.policy_stamp, field_name="policy_stamp"))
+        object.__setattr__(self, "started_at", _validate_timestamp(self.started_at, field_name="started_at"))
+        if self.finished_at is not None:
+            object.__setattr__(
+                self,
+                "finished_at",
+                _validate_timestamp(self.finished_at, field_name="finished_at"),
+            )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
+@dataclass(frozen=True, slots=True)
+class MigrationArtifactRecord:
+    artifact_id: str
+    import_run_id: str
+    source_kind: str
+    source_ref: str
+    subject_id: str | None
+    imported_at: datetime
+    content_fingerprint: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "artifact_id", _clean_text(self.artifact_id, field_name="artifact_id"))
+        object.__setattr__(self, "import_run_id", _clean_text(self.import_run_id, field_name="import_run_id"))
+        object.__setattr__(self, "source_kind", _clean_text(self.source_kind, field_name="source_kind"))
+        object.__setattr__(self, "source_ref", _clean_text(self.source_ref, field_name="source_ref"))
+        if self.subject_id is not None:
+            object.__setattr__(
+                self,
+                "subject_id",
+                _clean_text(self.subject_id, field_name="subject_id"),
+            )
+        object.__setattr__(self, "imported_at", _validate_timestamp(self.imported_at, field_name="imported_at"))
+        object.__setattr__(
+            self,
+            "content_fingerprint",
+            _clean_text(self.content_fingerprint, field_name="content_fingerprint"),
+        )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
 class SQLiteRepository:
     """Explicit CRUD and lookup helpers over the canonical SQLite schema."""
 
@@ -265,6 +321,133 @@ class SQLiteRepository:
         if row is None:
             return None
         return self._disclosure_policy_from_row(row)
+
+    def save_import_run(self, import_run: ImportRunRecord) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO import_runs(
+                    import_run_id,
+                    source_kind,
+                    source_ref,
+                    policy_stamp,
+                    started_at,
+                    finished_at,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(import_run_id) DO UPDATE SET
+                    source_kind = excluded.source_kind,
+                    source_ref = excluded.source_ref,
+                    policy_stamp = excluded.policy_stamp,
+                    started_at = excluded.started_at,
+                    finished_at = excluded.finished_at,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    import_run.import_run_id,
+                    import_run.source_kind,
+                    import_run.source_ref,
+                    import_run.policy_stamp,
+                    import_run.started_at.isoformat(),
+                    None if import_run.finished_at is None else import_run.finished_at.isoformat(),
+                    _dump_json(import_run.metadata),
+                ),
+            )
+
+    def read_import_run(self, import_run_id: str) -> ImportRunRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                import_run_id,
+                source_kind,
+                source_ref,
+                policy_stamp,
+                started_at,
+                finished_at,
+                metadata_json
+            FROM import_runs
+            WHERE import_run_id = ?
+            """,
+            (_clean_text(import_run_id, field_name="import_run_id"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return ImportRunRecord(
+            import_run_id=row["import_run_id"],
+            source_kind=row["source_kind"],
+            source_ref=row["source_ref"],
+            policy_stamp=row["policy_stamp"],
+            started_at=_parse_timestamp(row["started_at"], field_name="started_at"),
+            finished_at=_parse_timestamp(row["finished_at"], field_name="finished_at"),
+            metadata=_load_json_object(row["metadata_json"]),
+        )
+
+    def save_migration_artifact(self, artifact: MigrationArtifactRecord) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO migration_artifacts(
+                    artifact_id,
+                    import_run_id,
+                    source_kind,
+                    source_ref,
+                    subject_id,
+                    imported_at,
+                    content_fingerprint,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(artifact_id) DO UPDATE SET
+                    import_run_id = excluded.import_run_id,
+                    source_kind = excluded.source_kind,
+                    source_ref = excluded.source_ref,
+                    subject_id = excluded.subject_id,
+                    imported_at = excluded.imported_at,
+                    content_fingerprint = excluded.content_fingerprint,
+                    metadata_json = excluded.metadata_json
+                """,
+                (
+                    artifact.artifact_id,
+                    artifact.import_run_id,
+                    artifact.source_kind,
+                    artifact.source_ref,
+                    artifact.subject_id,
+                    artifact.imported_at.isoformat(),
+                    artifact.content_fingerprint,
+                    _dump_json(artifact.metadata),
+                ),
+            )
+
+    def read_migration_artifact(self, artifact_id: str) -> MigrationArtifactRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                artifact_id,
+                import_run_id,
+                source_kind,
+                source_ref,
+                subject_id,
+                imported_at,
+                content_fingerprint,
+                metadata_json
+            FROM migration_artifacts
+            WHERE artifact_id = ?
+            """,
+            (_clean_text(artifact_id, field_name="artifact_id"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return MigrationArtifactRecord(
+            artifact_id=row["artifact_id"],
+            import_run_id=row["import_run_id"],
+            source_kind=row["source_kind"],
+            source_ref=row["source_ref"],
+            subject_id=row["subject_id"],
+            imported_at=_parse_timestamp(row["imported_at"], field_name="imported_at"),
+            content_fingerprint=row["content_fingerprint"],
+            metadata=_load_json_object(row["metadata_json"]),
+        )
 
     def save_subject(
         self,
