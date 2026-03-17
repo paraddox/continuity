@@ -275,6 +275,8 @@ class ArchitectureDocTests(unittest.TestCase):
         self.assertIn("one serialized commit lane", text)
         self.assertIn("in-process worker threads only", text)
         self.assertIn("no multi-process write coordination in v1", text)
+        self.assertIn("same typed request/response contract", text)
+        self.assertIn("daemon-only service operations", text)
 
 
 if __name__ == "__main__":

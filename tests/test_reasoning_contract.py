@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = ROOT_DIR / "src"
+DOC_PATH = ROOT_DIR / "docs" / "architecture.md"
 
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
@@ -179,6 +180,19 @@ class ReasoningContractTests(unittest.TestCase):
 
         with self.assertRaises(TypeError):
             publish_authoritative_mutation(raw_output, lambda payload: payload)  # type: ignore[arg-type]
+
+    def test_architecture_doc_mentions_future_reasoning_adapter_extension_contract(self) -> None:
+        self.assertTrue(DOC_PATH.exists(), f"missing architecture doc: {DOC_PATH}")
+
+        text = DOC_PATH.read_text(encoding="utf-8").lower()
+
+        self.assertIn("future reasoning adapters", text)
+        self.assertIn("reasoningadapter", text)
+        self.assertIn("answer_query", text)
+        self.assertIn("generate_structured", text)
+        self.assertIn("summarize_session", text)
+        self.assertIn("derive_claims", text)
+        self.assertIn("schema validation", text)
 
 
 if __name__ == "__main__":

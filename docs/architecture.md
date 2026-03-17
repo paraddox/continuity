@@ -728,6 +728,37 @@ as repository handles, SQLite connections, threads, vector clients, or other
 transport-specific runtime details must not leak across the canonical service
 contract.
 
+## Reasoning Adapter Extension Contract
+
+The first shipped reasoning adapter is the Codex-backed `CodexAdapter` using
+the `hermes_v1` policy pack, but that adapter is not a privileged engine path.
+Future reasoning adapters must extend the same frozen `ReasoningAdapter`
+contract rather than creating host-specific or provider-specific side channels.
+
+The extension surface is intentionally closed to four operations:
+
+- `answer_query`
+- `generate_structured`
+- `summarize_session`
+- `derive_claims`
+
+Every future reasoning adapter must consume the same transport-neutral request
+DTOs and return the same transport-neutral response DTOs that the current
+adapter uses. Provider SDK clients, model names, prompt-shaping details,
+retries, and auth concerns stay behind the adapter boundary rather than leaking
+into the service facade or compiled-view contracts.
+
+Reasoning writes remain schema-hard even when the implementation changes.
+`generate_structured` and `derive_claims` outputs must pass schema validation
+before they may publish authoritative mutations. Observation capture may still
+commit when an adapter response is malformed, but failed schema validation must
+block claim publication, belief updates, and compiled-view mutation.
+
+Adapter-specific identity belongs in replay and compiler metadata, not in the
+typed host API contract. Strategy ids, fingerprints, and adapter versions may
+change to support future reasoning adapters, but those changes must not widen
+the service request/response envelope or add provider-specific payload fields.
+
 ## Deployment Modes And Process Boundary
 
 Continuity keeps one engine and two shells:
@@ -762,6 +793,12 @@ SQLite ownership rules are explicit in v1:
 - one serialized commit lane
 - in-process worker threads only
 - no multi-process write coordination in v1
+
+The daemon shell must use the same typed request/response contract as embedded
+mode. It must not add daemon-only service operations, daemon-only payload
+fields, or daemon-only semantic branches. Transport concerns such as Unix
+domain socket paths, process supervision, startup ordering, and retries belong
+to the shell and must not leak into the transport-neutral engine contract.
 
 The future daemon wrapper keeps the same single-owner semantics, but the owner
 process becomes the daemon instead of Hermes. That changes process lifecycle and
