@@ -10,6 +10,18 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Iterable
 
+from continuity.arbiter import ArbiterPublication, ArbiterPublicationKind, MutationArbiter
+from continuity.events import EventPayloadMode, SystemEvent
+from continuity.snapshots import (
+    MemorySnapshot,
+    SnapshotArtifactKind,
+    SnapshotArtifactRef,
+    SnapshotHead,
+    SnapshotHeadState,
+    SnapshotRepository,
+)
+from continuity.transactions import DurabilityWaterline, TransactionKind, TransactionPhase
+
 
 def _clean_text(value: str, *, field_name: str) -> str:
     cleaned = value.strip()
@@ -308,6 +320,50 @@ class RebuildPlan:
         raise KeyError(cleaned_node_id)
 
 
+@dataclass(frozen=True, slots=True)
+class RebuildArtifact:
+    source_node_id: str
+    artifact_ref: SnapshotArtifactRef
+    supersedes_artifact_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source_node_id",
+            _clean_text(self.source_node_id, field_name="source_node_id"),
+        )
+        object.__setattr__(
+            self,
+            "supersedes_artifact_ids",
+            tuple(
+                dict.fromkeys(
+                    _clean_text(artifact_id, field_name="supersedes_artifact_ids")
+                    for artifact_id in self.supersedes_artifact_ids
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class StagedRebuild:
+    plan: RebuildPlan
+    active_snapshot_id: str
+    candidate_snapshot: MemorySnapshot
+    publication: ArbiterPublication
+    event: SystemEvent
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "active_snapshot_id",
+            _clean_text(self.active_snapshot_id, field_name="active_snapshot_id"),
+        )
+        if self.candidate_snapshot.parent_snapshot_id != self.active_snapshot_id:
+            raise ValueError("candidate_snapshot must be based on the active snapshot")
+        if self.publication.publication_kind is not ArbiterPublicationKind.VIEW_PUBLICATION:
+            raise ValueError("staged rebuilds must publish compiled-view work")
+
+
 def _validate_timestamp(value: datetime, *, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
@@ -326,6 +382,22 @@ def _json_dumps(value: object) -> str:
 class CompilerStateRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+
+    def replace_nodes(self, nodes: Iterable[CompilerNode]) -> None:
+        rows = tuple(nodes)
+        _index_nodes(rows)
+
+        with self._connection:
+            if rows:
+                placeholders = ", ".join("?" for _ in rows)
+                self._connection.execute(
+                    f"DELETE FROM compiler_nodes WHERE node_id NOT IN ({placeholders})",
+                    tuple(node.node_id for node in rows),
+                )
+            else:
+                self._connection.execute("DELETE FROM compiler_nodes")
+
+            self.upsert_nodes(rows)
 
     def upsert_nodes(self, nodes: Iterable[CompilerNode]) -> None:
         rows = tuple(nodes)
@@ -502,6 +574,48 @@ class CompilerStateRepository:
                     for dirty_node in rows
                 ),
             )
+
+    def clear_dirty_nodes(
+        self,
+        *,
+        statuses: Iterable[DirtyQueueStatus] = (
+            DirtyQueueStatus.PENDING,
+            DirtyQueueStatus.RUNNING,
+        ),
+    ) -> None:
+        cleaned_statuses = tuple(dict.fromkeys(statuses))
+        if not cleaned_statuses:
+            return
+
+        placeholders = ", ".join("?" for _ in cleaned_statuses)
+        with self._connection:
+            self._connection.execute(
+                f"DELETE FROM compiler_dirty_queue WHERE status IN ({placeholders})",
+                tuple(status.value for status in cleaned_statuses),
+            )
+
+    def set_dirty_node_status(
+        self,
+        node_ids: Iterable[str],
+        *,
+        status: DirtyQueueStatus,
+        current_status: DirtyQueueStatus | None = None,
+    ) -> None:
+        cleaned_node_ids = tuple(
+            dict.fromkeys(_clean_text(node_id, field_name="node_id") for node_id in node_ids)
+        )
+        if not cleaned_node_ids:
+            return
+
+        placeholders = ", ".join("?" for _ in cleaned_node_ids)
+        sql = f"UPDATE compiler_dirty_queue SET status = ? WHERE node_id IN ({placeholders})"
+        parameters: list[str] = [status.value, *cleaned_node_ids]
+        if current_status is not None:
+            sql += " AND status = ?"
+            parameters.append(current_status.value)
+
+        with self._connection:
+            self._connection.execute(sql, parameters)
 
     def list_dirty_nodes(
         self,
@@ -680,6 +794,21 @@ class CompilerStateRepository:
         return row[0]
 
 
+def _snapshot_artifact_kind_for_compiled_kind(
+    artifact_kind: CompiledArtifactKind,
+) -> SnapshotArtifactKind:
+    return {
+        CompiledArtifactKind.STATE_VIEW: SnapshotArtifactKind.STATE_VIEW,
+        CompiledArtifactKind.TIMELINE_VIEW: SnapshotArtifactKind.TIMELINE_VIEW,
+        CompiledArtifactKind.SET_VIEW: SnapshotArtifactKind.SET_VIEW,
+        CompiledArtifactKind.PROFILE_VIEW: SnapshotArtifactKind.PROFILE_VIEW,
+        CompiledArtifactKind.PROMPT_VIEW: SnapshotArtifactKind.PROMPT_VIEW,
+        CompiledArtifactKind.EVIDENCE_VIEW: SnapshotArtifactKind.EVIDENCE_VIEW,
+        CompiledArtifactKind.ANSWER_VIEW: SnapshotArtifactKind.ANSWER_VIEW,
+        CompiledArtifactKind.VECTOR_INDEX_RECORD: SnapshotArtifactKind.VECTOR_INDEX,
+    }[artifact_kind]
+
+
 def _index_nodes(nodes: tuple[CompilerNode, ...] | list[CompilerNode]) -> dict[str, CompilerNode]:
     indexed: dict[str, CompilerNode] = {}
     for node in nodes:
@@ -687,6 +816,167 @@ def _index_nodes(nodes: tuple[CompilerNode, ...] | list[CompilerNode]) -> dict[s
             raise ValueError(f"duplicate compiler node id: {node.node_id}")
         indexed[node.node_id] = node
     return indexed
+
+
+class IncrementalRebuildPlanner:
+    """Compute deterministic rebuild plans and stage compiled outputs off the active head."""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        arbiter: MutationArbiter | None = None,
+        snapshot_head_key: str = "current",
+    ) -> None:
+        self._connection = connection
+        self._repository = CompilerStateRepository(connection)
+        self._snapshots = SnapshotRepository(connection)
+        self._arbiter = MutationArbiter(connection) if arbiter is None else arbiter
+        self._snapshot_head_key = _clean_text(snapshot_head_key, field_name="snapshot_head_key")
+
+    def plan_rebuild(
+        self,
+        *,
+        nodes: tuple[CompilerNode, ...] | list[CompilerNode],
+        dependencies: tuple[CompilerDependency, ...] | list[CompilerDependency],
+        queued_at: datetime,
+    ) -> RebuildPlan:
+        current_nodes = tuple(nodes)
+        current_dependencies = tuple(dependencies)
+        previous_nodes = self._repository.list_nodes()
+        changes = tuple(
+            change
+            for change in detect_fingerprint_changes(
+                previous_nodes=previous_nodes,
+                current_nodes=current_nodes,
+            )
+            if change.current_fingerprint is not None
+        )
+        plan = plan_incremental_rebuild(
+            nodes=current_nodes,
+            dependencies=current_dependencies,
+            changes=changes,
+        )
+
+        self._repository.replace_nodes(current_nodes)
+        self._repository.replace_dependencies(current_dependencies)
+        self._repository.clear_dirty_nodes()
+        self._repository.enqueue_dirty_nodes(plan.dirty_nodes, queued_at=queued_at)
+        return plan
+
+    def stage_rebuild(
+        self,
+        *,
+        plan: RebuildPlan,
+        candidate_snapshot_id: str,
+        policy_stamp: str,
+        published_at: datetime,
+        rebuilt_artifacts: tuple[RebuildArtifact, ...] | list[RebuildArtifact],
+    ) -> StagedRebuild:
+        if not plan.dirty_nodes:
+            raise ValueError("cannot stage a rebuild without dirty nodes")
+
+        dirty_node_map = {
+            dirty_node.node_id: dirty_node
+            for dirty_node in plan.dirty_nodes
+        }
+        staged_artifacts = tuple(rebuilt_artifacts)
+        if not staged_artifacts:
+            raise ValueError("rebuilt_artifacts must be non-empty")
+
+        for staged_artifact in staged_artifacts:
+            dirty_node = dirty_node_map.get(staged_artifact.source_node_id)
+            if dirty_node is None:
+                raise ValueError(
+                    f"{staged_artifact.source_node_id} is not part of the rebuild plan"
+                )
+            if dirty_node.category is not CompilerNodeCategory.COMPILED_ARTIFACT:
+                raise ValueError("rebuilt artifacts must point at compiled_artifact nodes")
+            if not isinstance(dirty_node.kind, CompiledArtifactKind):
+                raise ValueError("compiled rebuild nodes must use CompiledArtifactKind")
+            expected_kind = _snapshot_artifact_kind_for_compiled_kind(dirty_node.kind)
+            if staged_artifact.artifact_ref.artifact_kind is not expected_kind:
+                raise ValueError(
+                    f"{staged_artifact.source_node_id} must stage a {expected_kind.value} artifact"
+                )
+
+        active_snapshot = self._snapshots.read_active_snapshot(head_key=self._snapshot_head_key)
+        if active_snapshot is None:
+            raise ValueError("staging a rebuild requires an active snapshot")
+
+        superseded_ids = {
+            artifact_id
+            for staged_artifact in staged_artifacts
+            for artifact_id in staged_artifact.supersedes_artifact_ids
+        }
+        candidate_artifact_refs = [
+            artifact_ref
+            for artifact_ref in active_snapshot.artifact_refs
+            if artifact_ref.artifact_id not in superseded_ids
+        ]
+        candidate_artifact_refs.extend(
+            staged_artifact.artifact_ref
+            for staged_artifact in staged_artifacts
+        )
+
+        candidate_snapshot = MemorySnapshot(
+            snapshot_id=_clean_text(
+                candidate_snapshot_id,
+                field_name="candidate_snapshot_id",
+            ),
+            policy_stamp=_clean_text(policy_stamp, field_name="policy_stamp"),
+            parent_snapshot_id=active_snapshot.snapshot_id,
+            created_by_transaction=TransactionKind.COMPILE_VIEWS,
+            artifact_refs=tuple(dict.fromkeys(candidate_artifact_refs)),
+        )
+        self._snapshots.save_snapshot(candidate_snapshot)
+        self._snapshots.upsert_head(
+            SnapshotHead(
+                head_key=self._snapshot_head_key,
+                state=SnapshotHeadState.CANDIDATE,
+                snapshot_id=candidate_snapshot.snapshot_id,
+                based_on_snapshot_id=active_snapshot.snapshot_id,
+            )
+        )
+
+        published_mutation = self._arbiter.publish(
+            publication_kind=ArbiterPublicationKind.VIEW_PUBLICATION,
+            transaction_kind=TransactionKind.COMPILE_VIEWS,
+            phase=TransactionPhase.COMPILE_VIEWS,
+            object_ids=tuple(
+                dict.fromkeys(
+                    staged_artifact.source_node_id
+                    for staged_artifact in staged_artifacts
+                )
+            ),
+            published_at=_validate_timestamp(
+                published_at,
+                field_name="published_at",
+            ),
+            payload_mode=EventPayloadMode.REFERENCE,
+            reference_ids=(
+                candidate_snapshot.snapshot_id,
+                *tuple(
+                    dict.fromkeys(
+                        staged_artifact.artifact_ref.artifact_id
+                        for staged_artifact in staged_artifacts
+                    )
+                ),
+            ),
+            reached_waterline=DurabilityWaterline.VIEWS_COMPILED,
+        )
+        self._repository.set_dirty_node_status(
+            (dirty_node.node_id for dirty_node in plan.dirty_nodes),
+            status=DirtyQueueStatus.DONE,
+            current_status=DirtyQueueStatus.PENDING,
+        )
+        return StagedRebuild(
+            plan=plan,
+            active_snapshot_id=active_snapshot.snapshot_id,
+            candidate_snapshot=candidate_snapshot,
+            publication=published_mutation.publication,
+            event=published_mutation.event,
+        )
 
 
 def detect_fingerprint_changes(
@@ -887,8 +1177,11 @@ __all__ = [
     "DirtyNode",
     "DirtyQueueStatus",
     "DirtyReason",
+    "IncrementalRebuildPlanner",
+    "RebuildArtifact",
     "RebuildPlan",
     "SourceInputKind",
+    "StagedRebuild",
     "UtilityStateKind",
     "detect_fingerprint_changes",
     "plan_incremental_rebuild",
