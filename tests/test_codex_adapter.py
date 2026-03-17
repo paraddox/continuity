@@ -86,6 +86,8 @@ class CodexAdapterConfigTests(unittest.TestCase):
         self.assertEqual(prompt_policy.policy_stamp, "hermes_v1@1.0.0")
         self.assertEqual(prompt_policy.generic_structured_spec.name, "structured_hermes_v1_v1")
         self.assertEqual(prompt_policy.claim_derivation_spec.name, "claims_hermes_v1_v1")
+        self.assertIn("Do not use project_fact for person-scoped subjects.", prompt_policy.claim_derivation_instructions)
+        self.assertIn("Use biography for stable facts about a person's local environment", prompt_policy.claim_derivation_instructions)
 
 
 class CodexAdapterTests(unittest.TestCase):

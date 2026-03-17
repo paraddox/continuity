@@ -420,26 +420,39 @@ class ContinuityHermesSessionManager:
     ) -> dict[str, str]:
         with self._operation_lock:
             session = self.get_or_create(session_key)
-            user_context = self._prompt_representation(
-                session=session,
-                session_id=session.continuity_session_id,
-                subject_id=self._user_subject_id(session.user_peer_id),
-                channel=DisclosureChannel.PROMPT,
-                purpose=DisclosurePurpose.PROMPT,
-                include_prompt=True,
-            )
-            ai_context = self._profile_representation(
-                session=session,
-                subject_id=self._assistant_subject_id(session.assistant_peer_id),
-                channel=DisclosureChannel.PROMPT,
-                purpose=DisclosurePurpose.PROMPT,
-            )
             payload = {
-                "representation": user_context["representation"],
-                "card": user_context["card"],
-                "ai_representation": ai_context["representation"],
-                "ai_card": ai_context["card"],
+                "representation": "",
+                "card": "",
+                "ai_representation": "",
+                "ai_card": "",
             }
+            try:
+                user_context = self._prompt_representation(
+                    session=session,
+                    session_id=session.continuity_session_id,
+                    subject_id=self._user_subject_id(session.user_peer_id),
+                    channel=DisclosureChannel.PROMPT,
+                    purpose=DisclosurePurpose.PROMPT,
+                    include_prompt=True,
+                )
+                ai_context = self._profile_representation(
+                    session=session,
+                    subject_id=self._assistant_subject_id(session.assistant_peer_id),
+                    channel=DisclosureChannel.PROMPT,
+                    purpose=DisclosurePurpose.PROMPT,
+                )
+                payload.update(
+                    {
+                        "representation": user_context["representation"],
+                        "card": user_context["card"],
+                        "ai_representation": ai_context["representation"],
+                        "ai_card": ai_context["card"],
+                    }
+                )
+            except LookupError:
+                if user_message:
+                    payload["query_hint"] = _clean_text(user_message, field_name="user_message")
+                return payload
             if user_message:
                 payload["query_hint"] = _clean_text(user_message, field_name="user_message")
             return payload
@@ -463,16 +476,19 @@ class ContinuityHermesSessionManager:
     def search_context(self, session_key: str, query: str, max_tokens: int = 800) -> str:
         with self._operation_lock:
             session = self.get_or_create(session_key)
-            results = self._builder.search(
-                query_text=_clean_text(query, field_name="query"),
-                disclosure_context=self._disclosure_context(
-                    session=session,
-                    channel=DisclosureChannel.SEARCH,
-                    purpose=DisclosurePurpose.SEARCH,
-                ),
-                subject_id=self._user_subject_id(session.user_peer_id),
-                limit=5,
-            )
+            try:
+                results = self._builder.search(
+                    query_text=_clean_text(query, field_name="query"),
+                    disclosure_context=self._disclosure_context(
+                        session=session,
+                        channel=DisclosureChannel.SEARCH,
+                        purpose=DisclosurePurpose.SEARCH,
+                    ),
+                    subject_id=self._user_subject_id(session.user_peer_id),
+                    limit=5,
+                )
+            except LookupError:
+                return ""
             if not results:
                 return ""
             budget = max(int(max_tokens), 1) * 4
@@ -503,15 +519,18 @@ class ContinuityHermesSessionManager:
                 if str(peer).strip().lower() == "ai"
                 else self._user_subject_id(session.user_peer_id)
             )
-            view = self._builder.build_answer_view(
-                question=_clean_text(query, field_name="query"),
-                disclosure_context=self._disclosure_context(
-                    session=session,
-                    channel=DisclosureChannel.ANSWER,
-                    purpose=DisclosurePurpose.ANSWER,
-                ),
-                subject_id=subject_id,
-            )
+            try:
+                view = self._builder.build_answer_view(
+                    question=_clean_text(query, field_name="query"),
+                    disclosure_context=self._disclosure_context(
+                        session=session,
+                        channel=DisclosureChannel.ANSWER,
+                        purpose=DisclosurePurpose.ANSWER,
+                    ),
+                    subject_id=subject_id,
+                )
+            except LookupError:
+                return ""
             return str(view.payload["answer_text"])
 
     def create_conclusion(self, session_key: str, content: str) -> bool:

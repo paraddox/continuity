@@ -208,7 +208,10 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
             "Do not emit any other scope words such as personal, private, public, or global. "
             "Valid claim_type values are exactly: preference, biography, relationship, task_state, project_fact, instruction, commitment, open_question, ephemeral_context, assistant_self_model. "
             "Valid locus_key prefixes are exactly: preference/, biography/, relationship/, task_state/, project_fact/, instruction/, commitment/, open_question/, ephemeral/, assistant/. "
-            "Do not invent new claim_type names or new locus_key namespaces."
+            "Do not invent new claim_type names or new locus_key namespaces. "
+            "For person-scoped subjects such as observation:N.author, prefer preference, biography, relationship, instruction, commitment, open_question, or ephemeral_context. "
+            "Do not use project_fact for person-scoped subjects. "
+            "Use biography for stable facts about a person's local environment, identity, access level, installed tools, or provider/model defaults."
         ),
         generic_structured_spec=generic_structured_spec,
         claim_derivation_spec=claim_derivation_spec,

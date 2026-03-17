@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -69,6 +70,9 @@ from .base import (
     validate_structured_output,
 )
 from .codex_adapter import CodexAdapterConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -397,10 +401,20 @@ class ClaimDerivationPipeline:
         source_transaction_kind: TransactionKind,
         run_at: datetime,
     ) -> ClaimDerivationResult:
-        resolved_candidates = tuple(
-            self._resolve_candidate(candidate, observations=observations)
-            for candidate in envelope.candidates
-        )
+        resolved_candidates: list[ResolvedCandidate] = []
+        for candidate in envelope.candidates:
+            try:
+                resolved_candidates.append(
+                    self._resolve_candidate(candidate, observations=observations)
+                )
+            except ValueError as exc:
+                logger.warning(
+                    "Skipping invalid derived candidate claim_type=%s subject_ref=%s locus_key=%s: %s",
+                    candidate.claim_type,
+                    candidate.subject_ref,
+                    candidate.locus_key,
+                    exc,
+                )
         active_snapshot_id = self._ensure_active_snapshot()
         derivation_run_id = None
         decision_traces: list[AdmissionDecisionTrace] = []

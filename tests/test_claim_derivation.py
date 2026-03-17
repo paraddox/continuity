@@ -406,6 +406,54 @@ class ClaimDerivationPipelineTests(unittest.TestCase):
         )
         self.assertIsNotNone(repository.read_observation("obs-1"))
 
+    def test_invalid_candidate_does_not_block_valid_candidates_from_publishing(self) -> None:
+        connection, repository, _, _, _, _, pipeline = self.build_pipeline(
+            adapter_payload={
+                "candidates": [
+                    {
+                        "claim_type": "project_fact",
+                        "subject_ref": "observation:0.author",
+                        "scope": "user",
+                        "locus_key": "project_fact/provider_model_config",
+                        "value": {"provider": "openai"},
+                        "evidence_refs": ["observation:0"],
+                    },
+                    {
+                        "claim_type": "biography",
+                        "subject_ref": "observation:0.author",
+                        "scope": "user",
+                        "locus_key": "biography/local_environment",
+                        "value": {"os_family": "Linux", "username": "alice"},
+                        "evidence_refs": ["observation:0"],
+                    },
+                ]
+            }
+        )
+        save_observation(
+            repository,
+            observation_id="obs-1",
+            content="Alice uses Linux on her local machine.",
+            observed_at=sample_time(1),
+        )
+
+        result = pipeline.derive_from_observations(
+            observation_ids=("obs-1",),
+            session_id="session:hermes:test",
+            source_transaction_kind=TransactionKind.IMPORT_HISTORY,
+            run_at=sample_time(2),
+        )
+
+        claims = repository.list_claims(subject_id="subject:user:alice")
+
+        self.assertEqual(len(result.claim_ids), 1)
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0].claim_type, "biography")
+        self.assertEqual(claims[0].locus.locus_key, "biography/local_environment")
+        self.assertEqual(
+            connection.execute("SELECT COUNT(*) FROM derivation_runs").fetchone()[0],
+            1,
+        )
+
     def test_forgetting_tombstone_blocks_resurrection_from_derivation(self) -> None:
         connection, repository, _, _, _, _, pipeline = self.build_pipeline(
             adapter_payload={

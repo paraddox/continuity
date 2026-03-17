@@ -285,6 +285,24 @@ class ContinuityHermesSessionManagerTests(unittest.TestCase):
 
         self.assertTrue(manager.create_conclusion("telegram:123456", "User prefers espresso."))
 
+    def test_read_paths_return_safe_defaults_before_first_snapshot(self) -> None:
+        manager, _, _ = self.build_manager()
+        manager.get_or_create("telegram:123456")
+
+        self.assertEqual(manager.get_peer_card("telegram:123456"), [])
+        self.assertEqual(manager.search_context("telegram:123456", "espresso"), "")
+        self.assertEqual(manager.dialectic_query("telegram:123456", "What does Alice prefer?"), "")
+        self.assertEqual(
+            manager.get_prefetch_context("telegram:123456", "What were we working on?"),
+            {
+                "representation": "",
+                "card": "",
+                "ai_representation": "",
+                "ai_card": "",
+                "query_hint": "What were we working on?",
+            },
+        )
+
     def test_migrate_memory_files_imports_local_memory_wrappers(self) -> None:
         manager, adapter, tmpdir = self.build_manager()
         session = manager.get_or_create("telegram:123456")
