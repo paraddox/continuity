@@ -520,7 +520,7 @@ class ContinuityHermesSessionManager:
             session = self.get_or_create(session_key)
             observation_id = self._save_import_observation(
                 session_id=session.continuity_session_id,
-                author_subject_id=self._assistant_subject_id(session.assistant_peer_id),
+                author_subject_id=self._user_subject_id(session.user_peer_id),
                 content=cleaned,
                 metadata={"origin": "honcho_conclude", "target_subject": "user"},
             )
