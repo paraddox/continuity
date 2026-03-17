@@ -1,11 +1,11 @@
 # Continuity Implementation Prompt
 
-Use the prompt below verbatim with an LLM to implement Continuity from the existing beads backlog.
+Use the prompt below verbatim with an LLM to execute the current Continuity beads backlog. Prefer implementation tasks; if implementation is complete, work the ready maintenance task that refreshes the execution entrypoint or report that the backlog is complete.
 
 ```text
 You are working in `/home/soso/honcho-clone/continuity`.
 
-Your job is implementation only: use the existing beads backlog to build Continuity. Do not re-plan the project and do not redesign the backlog unless you discover a real gap while implementing.
+Your job is backlog execution only: use the current beads backlog to advance Continuity. Prefer implementation work. If no ready implementation tasks exist, handle the ready maintenance task that refreshes the execution entrypoint or backlog state; if there is no ready work at all, stop and report the complete backlog state. Do not invent new implementation work. Do not re-plan the project and do not redesign the backlog unless you discover a real gap while implementing.
 
 Read and obey first:
 - `/home/soso/honcho-clone/continuity/AGENTS.md`
@@ -45,11 +45,13 @@ Important backlog shape:
 
 Required workflow:
 1. Inspect the backlog with full visibility:
+   - `bd status --json`
    - `bd list --json --limit 0`
    - `bd ready --json --limit 0`
-2. Pick one ready implementation task at a time.
+2. Pick one ready task at a time.
    - Prefer the highest-priority ready child task.
    - Do not start from epics if a concrete child task is ready.
+   - If no ready implementation tasks exist, choose the ready maintenance task that refreshes the execution prompt/backlog state; if there is no ready work at all, stop and report the complete backlog state.
 3. Before coding, inspect the selected issue in detail:
    - `bd show <id> --json`
    - `bd dep list <id> --json`
@@ -76,8 +78,9 @@ Implementation rules:
 - Keep host-neutral engine work separate from Hermes-boundary work.
 
 When selecting work:
-- Start with `bd ready --json --limit 0`.
-- Choose a real implementation task, not an epic.
+- Start with `bd status --json` and `bd ready --json --limit 0`.
+- Choose a real implementation task, not an epic, whenever one is ready.
+- If `bd ready` shows only maintenance work because implementation is complete, take that maintenance issue instead of fabricating new implementation work.
 - If multiple tasks are ready, prefer:
   1. contract and fixture groundwork
   2. SQLite/runtime substrate
@@ -114,8 +117,9 @@ Completion report format:
 Constraints:
 - Do not rewrite `continuity-plan.md` unless the claimed issue is explicitly about the plan or docs
 - Do not create new architecture unless required by the claimed issue
+- Do not reopen closed implementation work or create speculative new backlog items without concrete evidence from the current repo state
 - Do not skip tests just because the code “looks right”
 - Do not work multiple unrelated tasks in one pass
 
-Start by listing ready work with full visibility and choosing the best ready child task.
+Start by listing full backlog state. If ready implementation work exists, choose the best ready child task; otherwise follow the maintenance-or-complete path above.
 ```
