@@ -24,6 +24,14 @@ def _clean_optional_text(value: str | None, *, field_name: str) -> str | None:
     return _clean_text(value, field_name=field_name)
 
 
+def _clean_identifier_tuple(
+    values: tuple[str, ...],
+    *,
+    field_name: str,
+) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(_clean_text(value, field_name=field_name) for value in values))
+
+
 def _validate_timestamp(value: datetime, *, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
@@ -97,6 +105,10 @@ class ResolutionQueueItem:
     deferred_until: datetime | None = None
     batch_key: str | None = None
     candidate_id: str | None = None
+    session_id: str | None = None
+    claim_ids: tuple[str, ...] = ()
+    observation_ids: tuple[str, ...] = ()
+    outcome_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "item_id", _clean_text(self.item_id, field_name="item_id"))
@@ -128,6 +140,26 @@ class ResolutionQueueItem:
                 "candidate_id",
                 _clean_text(self.candidate_id, field_name="candidate_id"),
             )
+        object.__setattr__(
+            self,
+            "session_id",
+            _clean_optional_text(self.session_id, field_name="session_id"),
+        )
+        object.__setattr__(
+            self,
+            "claim_ids",
+            _clean_identifier_tuple(self.claim_ids, field_name="claim_ids"),
+        )
+        object.__setattr__(
+            self,
+            "observation_ids",
+            _clean_identifier_tuple(self.observation_ids, field_name="observation_ids"),
+        )
+        object.__setattr__(
+            self,
+            "outcome_ids",
+            _clean_identifier_tuple(self.outcome_ids, field_name="outcome_ids"),
+        )
 
     @property
     def publishes_claim(self) -> bool:
@@ -231,6 +263,7 @@ class ResolutionQueueRepository:
                     source,
                     priority,
                     subject_id,
+                    session_id,
                     locus_key,
                     rationale,
                     created_at,
@@ -239,15 +272,19 @@ class ResolutionQueueRepository:
                     surfaces_json,
                     deferred_until,
                     batch_key,
-                    candidate_id
+                    candidate_id,
+                    claim_ids_json,
+                    observation_ids_json,
+                    outcome_ids_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item.item_id,
                     item.source.value,
                     item.priority.value,
                     item.subject_id,
+                    item.session_id,
                     item.locus_key,
                     item.rationale,
                     item.created_at.isoformat(),
@@ -257,6 +294,9 @@ class ResolutionQueueRepository:
                     item.deferred_until.isoformat() if item.deferred_until is not None else None,
                     item.batch_key,
                     item.candidate_id,
+                    json.dumps(item.claim_ids),
+                    json.dumps(item.observation_ids),
+                    json.dumps(item.outcome_ids),
                 ),
             )
 
@@ -268,6 +308,7 @@ class ResolutionQueueRepository:
                 source,
                 priority,
                 subject_id,
+                session_id,
                 locus_key,
                 rationale,
                 created_at,
@@ -276,7 +317,10 @@ class ResolutionQueueRepository:
                 surfaces_json,
                 deferred_until,
                 batch_key,
-                candidate_id
+                candidate_id,
+                claim_ids_json,
+                observation_ids_json,
+                outcome_ids_json
             FROM resolution_queue_items
             WHERE item_id = ?
             """,
@@ -290,6 +334,7 @@ class ResolutionQueueRepository:
         self,
         *,
         subject_id: str | None = None,
+        session_id: str | None = None,
         status: ResolutionStatus | None = None,
         surface: ResolutionSurface | None = None,
         batch_key: str | None = None,
@@ -303,6 +348,9 @@ class ResolutionQueueRepository:
         if subject_id is not None:
             conditions.append("subject_id = ?")
             params.append(_clean_text(subject_id, field_name="subject_id"))
+        if session_id is not None:
+            conditions.append("session_id = ?")
+            params.append(_clean_text(session_id, field_name="session_id"))
         if status is not None:
             conditions.append("status = ?")
             params.append(status.value)
@@ -321,6 +369,7 @@ class ResolutionQueueRepository:
                 source,
                 priority,
                 subject_id,
+                session_id,
                 locus_key,
                 rationale,
                 created_at,
@@ -329,7 +378,10 @@ class ResolutionQueueRepository:
                 surfaces_json,
                 deferred_until,
                 batch_key,
-                candidate_id
+                candidate_id,
+                claim_ids_json,
+                observation_ids_json,
+                outcome_ids_json
             FROM resolution_queue_items
             {where_clause}
             """,
@@ -471,19 +523,23 @@ class ResolutionQueueRepository:
             source=ResolutionSource(row[1]),  # type: ignore[arg-type]
             priority=ResolutionPriority(row[2]),  # type: ignore[arg-type]
             subject_id=row[3],  # type: ignore[arg-type]
-            locus_key=row[4],  # type: ignore[arg-type]
-            rationale=row[5],  # type: ignore[arg-type]
+            session_id=row[4],  # type: ignore[arg-type]
+            locus_key=row[5],  # type: ignore[arg-type]
+            rationale=row[6],  # type: ignore[arg-type]
             created_at=_validate_timestamp(
-                datetime.fromisoformat(row[6]),  # type: ignore[arg-type]
+                datetime.fromisoformat(row[7]),  # type: ignore[arg-type]
                 field_name="created_at",
             ),
-            utility_boost=row[7],  # type: ignore[arg-type]
-            status=ResolutionStatus(row[8]),  # type: ignore[arg-type]
+            utility_boost=row[8],  # type: ignore[arg-type]
+            status=ResolutionStatus(row[9]),  # type: ignore[arg-type]
             surfaces=tuple(
                 ResolutionSurface(surface)
-                for surface in json.loads(row[9])  # type: ignore[arg-type]
+                for surface in json.loads(row[10])  # type: ignore[arg-type]
             ),
-            deferred_until=_parse_timestamp(row[10]),  # type: ignore[arg-type]
-            batch_key=row[11],  # type: ignore[arg-type]
-            candidate_id=row[12],  # type: ignore[arg-type]
+            deferred_until=_parse_timestamp(row[11]),  # type: ignore[arg-type]
+            batch_key=row[12],  # type: ignore[arg-type]
+            candidate_id=row[13],  # type: ignore[arg-type]
+            claim_ids=tuple(json.loads(row[14])),  # type: ignore[arg-type]
+            observation_ids=tuple(json.loads(row[15])),  # type: ignore[arg-type]
+            outcome_ids=tuple(json.loads(row[16])),  # type: ignore[arg-type]
         )

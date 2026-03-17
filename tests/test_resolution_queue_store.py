@@ -47,6 +47,30 @@ def open_memory_database() -> sqlite3.Connection:
     return connection
 
 
+def seed_session(connection: sqlite3.Connection, *, session_id: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO sessions(
+            session_id,
+            host_namespace,
+            session_name,
+            recall_mode,
+            write_frequency,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            session_id,
+            "hermes",
+            "Session",
+            "balanced",
+            "default",
+            sample_time().isoformat(),
+        ),
+    )
+
+
 def seed_subject(
     connection: sqlite3.Connection,
     *,
@@ -315,6 +339,47 @@ class ResolutionQueueRepositoryTests(unittest.TestCase):
                     recorded_at=sample_time(32),
                 ),
             ),
+        )
+
+    def test_repository_persists_session_and_provenance_links(self) -> None:
+        self.assertIsNotNone(ResolutionQueueRepository)
+
+        connection = open_memory_database()
+        self.addCleanup(connection.close)
+        seed_session(connection, session_id="session-1")
+        seed_subject(
+            connection,
+            subject_id="subject:user:alice",
+            kind=SubjectKind.USER,
+            canonical_name="Alice",
+        )
+        repository = ResolutionQueueRepository(connection)
+
+        queued_item = ResolutionQueueItem(
+            item_id="queue-1",
+            source=ResolutionSource.NEEDS_CONFIRMATION,
+            priority=ResolutionPriority.HIGH,
+            subject_id="subject:user:alice",
+            session_id="session-1",
+            locus_key="preference/favorite_drink",
+            rationale="confirm the preference before durable promotion",
+            created_at=sample_time(),
+            surfaces=(ResolutionSurface.HOST_API,),
+            claim_ids=("claim-1", "claim-1", "claim-2"),
+            observation_ids=("obs-1", "obs-1"),
+            outcome_ids=("outcome-1",),
+        )
+
+        repository.enqueue_item(queued_item)
+
+        self.assertEqual(repository.read_item("queue-1"), queued_item)
+        self.assertEqual(
+            repository.list_items(
+                session_id="session-1",
+                surface=ResolutionSurface.HOST_API,
+                at_time=sample_time(10),
+            ),
+            (queued_item,),
         )
 
 

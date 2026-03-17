@@ -48,7 +48,7 @@ from continuity.utility import UtilitySignal
 from continuity.views import ViewKind
 
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -673,6 +673,32 @@ MIGRATIONS: tuple[Migration, ...] = (
         version=1,
         name="initial_full_memory_model",
         statements=_build_initial_schema_statements(),
+    ),
+    Migration(
+        version=2,
+        name="add_resolution_queue_session_and_provenance_links",
+        statements=(
+            """
+            ALTER TABLE resolution_queue_items
+            ADD COLUMN session_id TEXT REFERENCES sessions(session_id) ON DELETE SET NULL
+            """.strip(),
+            """
+            ALTER TABLE resolution_queue_items
+            ADD COLUMN claim_ids_json TEXT NOT NULL DEFAULT '[]'
+            """.strip(),
+            """
+            ALTER TABLE resolution_queue_items
+            ADD COLUMN observation_ids_json TEXT NOT NULL DEFAULT '[]'
+            """.strip(),
+            """
+            ALTER TABLE resolution_queue_items
+            ADD COLUMN outcome_ids_json TEXT NOT NULL DEFAULT '[]'
+            """.strip(),
+            """
+            CREATE INDEX idx_resolution_queue_session_priority
+            ON resolution_queue_items(session_id, status, priority, created_at)
+            """.strip(),
+        ),
     ),
 )
 
