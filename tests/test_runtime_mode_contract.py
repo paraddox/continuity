@@ -132,8 +132,15 @@ class ServiceContractTests(unittest.TestCase):
 
         forget_memory = service_contract_for(ServiceOperation.FORGET_MEMORY)
         self.assertEqual(forget_memory.transaction_kind, TransactionKind.FORGET_MEMORY)
+        self.assertIsNone(forget_memory.default_minimum_waterline)
+
+        resolve_follow_up = service_contract_for(ServiceOperation.RESOLVE_MEMORY_FOLLOW_UP)
         self.assertEqual(
-            forget_memory.default_minimum_waterline,
+            resolve_follow_up.transaction_kind,
+            TransactionKind.WRITE_CONCLUSION,
+        )
+        self.assertEqual(
+            resolve_follow_up.default_minimum_waterline,
             DurabilityWaterline.VIEWS_COMPILED,
         )
 
@@ -149,6 +156,16 @@ class ServiceContractTests(unittest.TestCase):
 
         evidence = service_contract_for(ServiceOperation.INSPECT_EVIDENCE)
         self.assertEqual(evidence.inspection_target, InspectionTarget.EVIDENCE)
+
+        record_outcome = service_contract_for(ServiceOperation.RECORD_OUTCOME)
+        self.assertEqual(
+            record_outcome.transaction_kind,
+            TransactionKind.COMPILE_VIEWS,
+        )
+        self.assertEqual(
+            record_outcome.default_minimum_waterline,
+            DurabilityWaterline.VIEWS_COMPILED,
+        )
 
         compiler = service_contract_for(ServiceOperation.INSPECT_COMPILER)
         self.assertEqual(compiler.inspection_target, InspectionTarget.COMPILER)

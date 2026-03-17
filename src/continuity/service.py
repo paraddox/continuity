@@ -368,7 +368,6 @@ def service_contracts() -> dict[ServiceOperation, ServiceOperationContract]:
             operation=ServiceOperation.FORGET_MEMORY,
             family=OperationFamily.MUTATION,
             transaction_kind=TransactionKind.FORGET_MEMORY,
-            default_minimum_waterline=DurabilityWaterline.VIEWS_COMPILED,
         ),
         ServiceOperation.WRITE_CONCLUSION: ServiceOperationContract(
             operation=ServiceOperation.WRITE_CONCLUSION,
@@ -383,6 +382,8 @@ def service_contracts() -> dict[ServiceOperation, ServiceOperationContract]:
         ServiceOperation.RESOLVE_MEMORY_FOLLOW_UP: ServiceOperationContract(
             operation=ServiceOperation.RESOLVE_MEMORY_FOLLOW_UP,
             family=OperationFamily.MUTATION,
+            transaction_kind=TransactionKind.WRITE_CONCLUSION,
+            default_minimum_waterline=DurabilityWaterline.VIEWS_COMPILED,
         ),
         ServiceOperation.IMPORT_HISTORY: ServiceOperationContract(
             operation=ServiceOperation.IMPORT_HISTORY,
@@ -433,6 +434,8 @@ def service_contracts() -> dict[ServiceOperation, ServiceOperationContract]:
         ServiceOperation.RECORD_OUTCOME: ServiceOperationContract(
             operation=ServiceOperation.RECORD_OUTCOME,
             family=OperationFamily.MUTATION,
+            transaction_kind=TransactionKind.COMPILE_VIEWS,
+            default_minimum_waterline=DurabilityWaterline.VIEWS_COMPILED,
         ),
         ServiceOperation.INSPECT_OUTCOMES: ServiceOperationContract(
             operation=ServiceOperation.INSPECT_OUTCOMES,

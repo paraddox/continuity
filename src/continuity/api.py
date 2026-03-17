@@ -8,6 +8,9 @@ from enum import StrEnum
 from functools import lru_cache
 
 from continuity.disclosure import DisclosureContext
+from continuity.forgetting import ForgettingMode, ForgettingTargetKind
+from continuity.outcomes import OutcomeLabel, OutcomeTarget
+from continuity.resolution_queue import ResolutionAction
 from continuity.service import (
     ContinuityServiceFacade,
     SERVICE_CONTRACT_VERSION,
@@ -15,7 +18,11 @@ from continuity.service import (
     ServiceRequest,
     ServiceResponse,
 )
-from continuity.transactions import DurabilityWaterline, TransactionKind
+from continuity.transactions import (
+    DurabilityWaterline,
+    TransactionKind,
+    write_frequency_policy_for,
+)
 from continuity.views import ViewKind
 
 
@@ -230,6 +237,261 @@ def deployment_boundaries() -> dict[DeploymentMode, DeploymentBoundary]:
 
 def deployment_boundary_for(mode: DeploymentMode) -> DeploymentBoundary:
     return deployment_boundaries()[mode]
+
+
+def _copy_payload_mapping(
+    value: Mapping[str, object] | None,
+    *,
+    field_name: str,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+    copied = dict(value)
+    if not copied:
+        raise ValueError(f"{field_name} must be non-empty when provided")
+    return copied
+
+
+def _save_turn_waterline(write_frequency: str | int | None) -> DurabilityWaterline | None:
+    if write_frequency is None:
+        return None
+    return write_frequency_policy_for(write_frequency).awaited_waterline
+
+
+def _forget_waterline(mode: ForgettingMode) -> DurabilityWaterline:
+    if mode is ForgettingMode.SUPERSEDE:
+        return DurabilityWaterline.VIEWS_COMPILED
+    return DurabilityWaterline.SNAPSHOT_PUBLISHED
+
+
+class ContinuityMutationApi:
+    """Typed control and mutating surface over the transport-neutral facade."""
+
+    def __init__(self, facade: ContinuityServiceFacade) -> None:
+        self._facade = facade
+
+    def initialize(
+        self,
+        *,
+        request_id: str,
+        host_namespace: str,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        recall_mode: str | None = None,
+        write_frequency: str | int | None = None,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            host_namespace=_clean_text(host_namespace, field_name="host_namespace"),
+            session_id=_optional_clean_text(session_id, field_name="session_id"),
+            session_name=_optional_clean_text(session_name, field_name="session_name"),
+            recall_mode=_optional_clean_text(recall_mode, field_name="recall_mode"),
+            write_frequency=write_frequency,
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.INITIALIZE,
+            request_id=request_id,
+            payload=payload,
+        )
+
+    def save_turn(
+        self,
+        *,
+        request_id: str,
+        session_id: str,
+        turn_id: str,
+        messages: tuple[Mapping[str, object], ...],
+        write_frequency: str | int | None = None,
+        metadata: Mapping[str, object] | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            session_id=_clean_text(session_id, field_name="session_id"),
+            turn_id=_clean_text(turn_id, field_name="turn_id"),
+            messages=messages,
+            write_frequency=write_frequency,
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.SAVE_TURN,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline or _save_turn_waterline(write_frequency),
+        )
+
+    def write_conclusion(
+        self,
+        *,
+        request_id: str,
+        session_id: str,
+        subject_id: str,
+        locus_key: str,
+        conclusion: str,
+        metadata: Mapping[str, object] | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            session_id=_clean_text(session_id, field_name="session_id"),
+            subject_id=_clean_text(subject_id, field_name="subject_id"),
+            locus_key=_clean_text(locus_key, field_name="locus_key"),
+            conclusion=_clean_text(conclusion, field_name="conclusion"),
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.WRITE_CONCLUSION,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline,
+        )
+
+    def forget_memory(
+        self,
+        *,
+        request_id: str,
+        target_id: str,
+        target_kind: ForgettingTargetKind,
+        mode: ForgettingMode,
+        requested_by: str,
+        rationale: str,
+        policy_stamp: str,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            target_id=_clean_text(target_id, field_name="target_id"),
+            target_kind=target_kind,
+            mode=mode,
+            requested_by=_clean_text(requested_by, field_name="requested_by"),
+            rationale=_clean_text(rationale, field_name="rationale"),
+            policy_stamp=_clean_text(policy_stamp, field_name="policy_stamp"),
+        )
+        return self._execute(
+            operation=ServiceOperation.FORGET_MEMORY,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline or _forget_waterline(mode),
+        )
+
+    def resolve_memory_follow_up(
+        self,
+        *,
+        request_id: str,
+        item_id: str,
+        action: ResolutionAction,
+        rationale: str,
+        metadata: Mapping[str, object] | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            item_id=_clean_text(item_id, field_name="item_id"),
+            action=action,
+            rationale=_clean_text(rationale, field_name="rationale"),
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.RESOLVE_MEMORY_FOLLOW_UP,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline,
+        )
+
+    def import_history(
+        self,
+        *,
+        request_id: str,
+        session_id: str,
+        source_kind: str,
+        entries: tuple[Mapping[str, object], ...],
+        metadata: Mapping[str, object] | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            session_id=_clean_text(session_id, field_name="session_id"),
+            source_kind=_clean_text(source_kind, field_name="source_kind"),
+            entries=entries,
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.IMPORT_HISTORY,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline,
+        )
+
+    def publish_snapshot(
+        self,
+        *,
+        request_id: str,
+        snapshot_id: str,
+        reason: str | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            snapshot_id=_clean_text(snapshot_id, field_name="snapshot_id"),
+            reason=_optional_clean_text(reason, field_name="reason"),
+        )
+        return self._execute(
+            operation=ServiceOperation.PUBLISH_SNAPSHOT,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline,
+        )
+
+    def record_outcome(
+        self,
+        *,
+        request_id: str,
+        outcome_label: OutcomeLabel,
+        target_kind: OutcomeTarget,
+        target_id: str,
+        policy_stamp: str,
+        rationale: str,
+        actor_subject_id: str | None = None,
+        claim_ids: tuple[str, ...] = (),
+        observation_ids: tuple[str, ...] = (),
+        metadata: Mapping[str, object] | None = None,
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        payload = _payload_fields(
+            outcome_label=outcome_label,
+            target_kind=target_kind,
+            target_id=_clean_text(target_id, field_name="target_id"),
+            policy_stamp=_clean_text(policy_stamp, field_name="policy_stamp"),
+            rationale=_clean_text(rationale, field_name="rationale"),
+            actor_subject_id=_optional_clean_text(
+                actor_subject_id,
+                field_name="actor_subject_id",
+            ),
+            claim_ids=_dedupe_cleaned(claim_ids, field_name="claim_ids"),
+            observation_ids=_dedupe_cleaned(
+                observation_ids,
+                field_name="observation_ids",
+            ),
+            metadata=_copy_payload_mapping(metadata, field_name="metadata"),
+        )
+        return self._execute(
+            operation=ServiceOperation.RECORD_OUTCOME,
+            request_id=request_id,
+            payload=payload,
+            minimum_waterline=minimum_waterline,
+        )
+
+    def _execute(
+        self,
+        *,
+        operation: ServiceOperation,
+        request_id: str,
+        payload: Mapping[str, object],
+        minimum_waterline: DurabilityWaterline | None = None,
+    ) -> ServiceResponse:
+        return self._facade.execute(
+            ServiceRequest(
+                operation=operation,
+                request_id=request_id,
+                payload=payload,
+                minimum_waterline=minimum_waterline,
+            )
+        )
 
 
 class ContinuityReadApi:

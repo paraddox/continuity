@@ -13,7 +13,7 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from continuity.api import ContinuityReadApi
+from continuity.api import ContinuityMutationApi, ContinuityReadApi
 from continuity.disclosure import (
     DisclosureChannel,
     DisclosureContext,
@@ -22,6 +22,9 @@ from continuity.disclosure import (
     DisclosureViewer,
     ViewerKind,
 )
+from continuity.forgetting import ForgettingMode, ForgettingTargetKind
+from continuity.outcomes import OutcomeLabel, OutcomeTarget
+from continuity.resolution_queue import ResolutionAction
 from continuity.service import (
     ContinuityServiceFacade,
     InspectionTarget,
@@ -531,6 +534,206 @@ class ContinuityReadApiTests(unittest.TestCase):
                 self.assertEqual(contract.inspection_target, expected_target)
                 self.assertEqual(dict(request.payload), expected_payload)
                 self.assertEqual(response.payload["family"], "inspection")
+
+
+class ContinuityMutationApiTests(unittest.TestCase):
+    def build_api(self) -> tuple[ContinuityMutationApi, RecordingExecutor]:
+        executor = RecordingExecutor()
+        facade = ContinuityServiceFacade(
+            {
+                operation: executor
+                for operation in ServiceOperation
+            }
+        )
+        return ContinuityMutationApi(facade), executor
+
+    def test_mutation_api_dispatches_control_and_mutating_operations(self) -> None:
+        api, executor = self.build_api()
+
+        cases = (
+            (
+                api.initialize,
+                {
+                    "request_id": "request:initialize",
+                    "host_namespace": "hermes",
+                    "session_id": "session:telegram:1",
+                    "session_name": "Telegram Alice",
+                    "recall_mode": "balanced",
+                    "write_frequency": "turn",
+                    "metadata": {"bootstrap": True},
+                },
+                ServiceOperation.INITIALIZE,
+                {
+                    "host_namespace": "hermes",
+                    "session_id": "session:telegram:1",
+                    "session_name": "Telegram Alice",
+                    "recall_mode": "balanced",
+                    "write_frequency": "turn",
+                    "metadata": {"bootstrap": True},
+                },
+                None,
+            ),
+            (
+                api.save_turn,
+                {
+                    "request_id": "request:save-turn",
+                    "session_id": "session:telegram:1",
+                    "turn_id": "turn:1",
+                    "messages": (
+                        {
+                            "message_id": "message:1",
+                            "role": "user",
+                            "content": "I prefer espresso.",
+                        },
+                    ),
+                    "write_frequency": "turn",
+                },
+                ServiceOperation.SAVE_TURN,
+                {
+                    "session_id": "session:telegram:1",
+                    "turn_id": "turn:1",
+                    "messages": (
+                        {
+                            "message_id": "message:1",
+                            "role": "user",
+                            "content": "I prefer espresso.",
+                        },
+                    ),
+                    "write_frequency": "turn",
+                },
+                DurabilityWaterline.SNAPSHOT_PUBLISHED,
+            ),
+            (
+                api.write_conclusion,
+                {
+                    "request_id": "request:write-conclusion",
+                    "session_id": "session:telegram:1",
+                    "subject_id": "subject:user:alice",
+                    "locus_key": "preference/favorite_drink",
+                    "conclusion": "Alice prefers espresso.",
+                },
+                ServiceOperation.WRITE_CONCLUSION,
+                {
+                    "session_id": "session:telegram:1",
+                    "subject_id": "subject:user:alice",
+                    "locus_key": "preference/favorite_drink",
+                    "conclusion": "Alice prefers espresso.",
+                },
+                DurabilityWaterline.VIEWS_COMPILED,
+            ),
+            (
+                api.forget_memory,
+                {
+                    "request_id": "request:forget-memory",
+                    "target_id": "claim:1",
+                    "target_kind": ForgettingTargetKind.CLAIM,
+                    "mode": ForgettingMode.SUPPRESS,
+                    "requested_by": "subject:user:self",
+                    "rationale": "User asked to hide the stale preference.",
+                    "policy_stamp": "hermes_v1@1.0.0",
+                },
+                ServiceOperation.FORGET_MEMORY,
+                {
+                    "target_id": "claim:1",
+                    "target_kind": "claim",
+                    "mode": "suppress",
+                    "requested_by": "subject:user:self",
+                    "rationale": "User asked to hide the stale preference.",
+                    "policy_stamp": "hermes_v1@1.0.0",
+                },
+                DurabilityWaterline.SNAPSHOT_PUBLISHED,
+            ),
+            (
+                api.resolve_memory_follow_up,
+                {
+                    "request_id": "request:resolve-follow-up",
+                    "item_id": "follow-up:1",
+                    "action": ResolutionAction.CONFIRM,
+                    "rationale": "User confirmed the memory directly.",
+                },
+                ServiceOperation.RESOLVE_MEMORY_FOLLOW_UP,
+                {
+                    "item_id": "follow-up:1",
+                    "action": "confirm",
+                    "rationale": "User confirmed the memory directly.",
+                },
+                DurabilityWaterline.VIEWS_COMPILED,
+            ),
+            (
+                api.import_history,
+                {
+                    "request_id": "request:import-history",
+                    "session_id": "session:telegram:1",
+                    "source_kind": "hermes_export",
+                    "entries": (
+                        {
+                            "message_id": "message:1",
+                            "role": "user",
+                            "content": "I prefer espresso.",
+                        },
+                    ),
+                },
+                ServiceOperation.IMPORT_HISTORY,
+                {
+                    "session_id": "session:telegram:1",
+                    "source_kind": "hermes_export",
+                    "entries": (
+                        {
+                            "message_id": "message:1",
+                            "role": "user",
+                            "content": "I prefer espresso.",
+                        },
+                    ),
+                },
+                DurabilityWaterline.VIEWS_COMPILED,
+            ),
+            (
+                api.publish_snapshot,
+                {
+                    "request_id": "request:publish-snapshot",
+                    "snapshot_id": "snapshot:candidate:1",
+                    "reason": "promote_after_manual_review",
+                },
+                ServiceOperation.PUBLISH_SNAPSHOT,
+                {
+                    "snapshot_id": "snapshot:candidate:1",
+                    "reason": "promote_after_manual_review",
+                },
+                DurabilityWaterline.SNAPSHOT_PUBLISHED,
+            ),
+            (
+                api.record_outcome,
+                {
+                    "request_id": "request:record-outcome",
+                    "outcome_label": OutcomeLabel.USER_CONFIRMED,
+                    "target_kind": OutcomeTarget.RESOLUTION_QUEUE_ITEM,
+                    "target_id": "follow-up:1",
+                    "policy_stamp": "hermes_v1@1.0.0",
+                    "rationale": "User confirmed the queued follow-up.",
+                },
+                ServiceOperation.RECORD_OUTCOME,
+                {
+                    "outcome_label": "user_confirmed",
+                    "target_kind": "resolution_queue_item",
+                    "target_id": "follow-up:1",
+                    "policy_stamp": "hermes_v1@1.0.0",
+                    "rationale": "User confirmed the queued follow-up.",
+                },
+                DurabilityWaterline.VIEWS_COMPILED,
+            ),
+        )
+
+        for method, kwargs, expected_operation, expected_payload, expected_waterline in cases:
+            with self.subTest(operation=expected_operation):
+                response = method(**kwargs)
+                resolved = executor.calls[-1]
+                request = resolved.request
+
+                self.assertEqual(request.operation, expected_operation)
+                self.assertEqual(dict(request.payload), expected_payload)
+                self.assertEqual(resolved.effective_minimum_waterline, expected_waterline)
+                self.assertEqual(response.operation, expected_operation)
+                self.assertEqual(response.reached_waterline, expected_waterline)
 
 
 if __name__ == "__main__":
