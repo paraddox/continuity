@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from functools import lru_cache
 
@@ -17,6 +19,12 @@ def _clean_text(value: str, *, field_name: str) -> str:
     if not cleaned:
         raise ValueError(f"{field_name} must be non-empty")
     return cleaned
+
+
+def _validate_timestamp(value: datetime, *, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value
 
 
 class MemoryTier(StrEnum):
@@ -102,6 +110,336 @@ class TierPolicy:
             raise ValueError("view_tiers must cover every compiled view kind")
         if set(self.archival_tiers) != set(ArchivalArtifactKind):
             raise ValueError("archival_tiers must cover every archival artifact kind")
+
+
+@dataclass(frozen=True, slots=True)
+class TierAssignment:
+    target_kind: str
+    target_id: str
+    policy_stamp: str
+    tier: MemoryTier
+    rationale: str
+    assigned_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "target_kind", _clean_text(self.target_kind, field_name="target_kind"))
+        object.__setattr__(self, "target_id", _clean_text(self.target_id, field_name="target_id"))
+        object.__setattr__(self, "policy_stamp", _clean_text(self.policy_stamp, field_name="policy_stamp"))
+        object.__setattr__(self, "rationale", _clean_text(self.rationale, field_name="rationale"))
+        object.__setattr__(self, "assigned_at", _validate_timestamp(self.assigned_at, field_name="assigned_at"))
+
+
+@dataclass(frozen=True, slots=True)
+class TierTransition:
+    transition_id: str
+    target_kind: str
+    target_id: str
+    policy_stamp: str
+    from_tier: MemoryTier
+    to_tier: MemoryTier
+    rationale: str
+    transitioned_at: datetime
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "transition_id", _clean_text(self.transition_id, field_name="transition_id"))
+        object.__setattr__(self, "target_kind", _clean_text(self.target_kind, field_name="target_kind"))
+        object.__setattr__(self, "target_id", _clean_text(self.target_id, field_name="target_id"))
+        object.__setattr__(self, "policy_stamp", _clean_text(self.policy_stamp, field_name="policy_stamp"))
+        object.__setattr__(self, "rationale", _clean_text(self.rationale, field_name="rationale"))
+        object.__setattr__(
+            self,
+            "transitioned_at",
+            _validate_timestamp(self.transitioned_at, field_name="transitioned_at"),
+        )
+        if self.from_tier is self.to_tier:
+            raise ValueError("tier transitions must change the tier")
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionMetadata:
+    target_kind: str
+    target_id: str
+    policy_stamp: str
+    tier: MemoryTier
+    rationale: str
+    assigned_at: datetime
+    retrieval_bias: RetrievalBias
+    rebuild_urgency: RebuildUrgency
+    snapshot_residency: SnapshotResidency
+    default_in_host_reads: bool
+    expunge_guarded: bool
+
+
+class TierStateRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def upsert_assignment(self, assignment: TierAssignment) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO tier_assignments(
+                    target_kind,
+                    target_id,
+                    policy_stamp,
+                    tier,
+                    rationale,
+                    assigned_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(target_kind, target_id, policy_stamp) DO UPDATE SET
+                    tier = excluded.tier,
+                    rationale = excluded.rationale,
+                    assigned_at = excluded.assigned_at
+                """,
+                (
+                    assignment.target_kind,
+                    assignment.target_id,
+                    assignment.policy_stamp,
+                    assignment.tier.value,
+                    assignment.rationale,
+                    assignment.assigned_at.isoformat(),
+                ),
+            )
+
+    def read_assignment(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+        policy_stamp: str,
+    ) -> TierAssignment | None:
+        row = self._connection.execute(
+            """
+            SELECT target_kind, target_id, policy_stamp, tier, rationale, assigned_at
+            FROM tier_assignments
+            WHERE target_kind = ? AND target_id = ? AND policy_stamp = ?
+            """,
+            (
+                _clean_text(target_kind, field_name="target_kind"),
+                _clean_text(target_id, field_name="target_id"),
+                _clean_text(policy_stamp, field_name="policy_stamp"),
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._assignment_from_row(row)
+
+    def list_assignments(
+        self,
+        *,
+        target_kind: str | None = None,
+        policy_stamp: str | None = None,
+        tiers: tuple[MemoryTier, ...] | None = None,
+        limit: int | None = None,
+    ) -> tuple[TierAssignment, ...]:
+        conditions: list[str] = []
+        parameters: list[object] = []
+
+        if target_kind is not None:
+            conditions.append("target_kind = ?")
+            parameters.append(_clean_text(target_kind, field_name="target_kind"))
+        if policy_stamp is not None:
+            conditions.append("policy_stamp = ?")
+            parameters.append(_clean_text(policy_stamp, field_name="policy_stamp"))
+        if tiers is not None:
+            cleaned_tiers = tuple(dict.fromkeys(tiers))
+            if not cleaned_tiers:
+                return ()
+            placeholders = ", ".join("?" for _ in cleaned_tiers)
+            conditions.append(f"tier IN ({placeholders})")
+            parameters.extend(tier.value for tier in cleaned_tiers)
+
+        sql = """
+            SELECT target_kind, target_id, policy_stamp, tier, rationale, assigned_at
+            FROM tier_assignments
+        """
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY rowid"
+
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("limit must be non-negative")
+            sql += " LIMIT ?"
+            parameters.append(limit)
+
+        rows = self._connection.execute(sql, tuple(parameters)).fetchall()
+        return tuple(self._assignment_from_row(row) for row in rows)
+
+    def record_transition(self, transition: TierTransition) -> None:
+        current_assignment = self.read_assignment(
+            target_kind=transition.target_kind,
+            target_id=transition.target_id,
+            policy_stamp=transition.policy_stamp,
+        )
+        if current_assignment is None:
+            raise ValueError("cannot record a tier transition without an existing assignment")
+        if current_assignment.tier is not transition.from_tier:
+            raise ValueError("tier transition must start from the current stored tier")
+
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO tier_transitions(
+                    transition_id,
+                    target_kind,
+                    target_id,
+                    policy_stamp,
+                    from_tier,
+                    to_tier,
+                    rationale,
+                    transitioned_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transition.transition_id,
+                    transition.target_kind,
+                    transition.target_id,
+                    transition.policy_stamp,
+                    transition.from_tier.value,
+                    transition.to_tier.value,
+                    transition.rationale,
+                    transition.transitioned_at.isoformat(),
+                ),
+            )
+            self._connection.execute(
+                """
+                UPDATE tier_assignments
+                SET tier = ?, rationale = ?, assigned_at = ?
+                WHERE target_kind = ? AND target_id = ? AND policy_stamp = ?
+                """,
+                (
+                    transition.to_tier.value,
+                    transition.rationale,
+                    transition.transitioned_at.isoformat(),
+                    transition.target_kind,
+                    transition.target_id,
+                    transition.policy_stamp,
+                ),
+            )
+
+    def list_transitions(
+        self,
+        *,
+        target_kind: str | None = None,
+        target_id: str | None = None,
+        policy_stamp: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[TierTransition, ...]:
+        conditions: list[str] = []
+        parameters: list[object] = []
+
+        if target_kind is not None:
+            conditions.append("target_kind = ?")
+            parameters.append(_clean_text(target_kind, field_name="target_kind"))
+        if target_id is not None:
+            conditions.append("target_id = ?")
+            parameters.append(_clean_text(target_id, field_name="target_id"))
+        if policy_stamp is not None:
+            conditions.append("policy_stamp = ?")
+            parameters.append(_clean_text(policy_stamp, field_name="policy_stamp"))
+
+        sql = """
+            SELECT
+                transition_id,
+                target_kind,
+                target_id,
+                policy_stamp,
+                from_tier,
+                to_tier,
+                rationale,
+                transitioned_at
+            FROM tier_transitions
+        """
+        if conditions:
+            sql += " WHERE " + " AND ".join(conditions)
+        sql += " ORDER BY rowid"
+
+        if limit is not None:
+            if limit < 0:
+                raise ValueError("limit must be non-negative")
+            sql += " LIMIT ?"
+            parameters.append(limit)
+
+        rows = self._connection.execute(sql, tuple(parameters)).fetchall()
+        return tuple(self._transition_from_row(row) for row in rows)
+
+    def read_retention_metadata(
+        self,
+        *,
+        target_kind: str,
+        target_id: str,
+        policy_stamp: str,
+    ) -> RetentionMetadata | None:
+        assignment = self.read_assignment(
+            target_kind=target_kind,
+            target_id=target_id,
+            policy_stamp=policy_stamp,
+        )
+        if assignment is None:
+            return None
+        return self._retention_metadata_from_assignment(assignment)
+
+    def list_retention_metadata(
+        self,
+        *,
+        target_kind: str | None = None,
+        policy_stamp: str | None = None,
+        tiers: tuple[MemoryTier, ...] | None = None,
+        limit: int | None = None,
+    ) -> tuple[RetentionMetadata, ...]:
+        return tuple(
+            self._retention_metadata_from_assignment(assignment)
+            for assignment in self.list_assignments(
+                target_kind=target_kind,
+                policy_stamp=policy_stamp,
+                tiers=tiers,
+                limit=limit,
+            )
+        )
+
+    def _assignment_from_row(self, row: tuple[object, ...]) -> TierAssignment:
+        return TierAssignment(
+            target_kind=row[0],
+            target_id=row[1],
+            policy_stamp=row[2],
+            tier=MemoryTier(row[3]),
+            rationale=row[4],
+            assigned_at=_validate_timestamp(datetime.fromisoformat(row[5]), field_name="assigned_at"),
+        )
+
+    def _transition_from_row(self, row: tuple[object, ...]) -> TierTransition:
+        return TierTransition(
+            transition_id=row[0],
+            target_kind=row[1],
+            target_id=row[2],
+            policy_stamp=row[3],
+            from_tier=MemoryTier(row[4]),
+            to_tier=MemoryTier(row[5]),
+            rationale=row[6],
+            transitioned_at=_validate_timestamp(
+                datetime.fromisoformat(row[7]),
+                field_name="transitioned_at",
+            ),
+        )
+
+    def _retention_metadata_from_assignment(self, assignment: TierAssignment) -> RetentionMetadata:
+        rule = tier_rule_for(assignment.tier)
+        return RetentionMetadata(
+            target_kind=assignment.target_kind,
+            target_id=assignment.target_id,
+            policy_stamp=assignment.policy_stamp,
+            tier=assignment.tier,
+            rationale=assignment.rationale,
+            assigned_at=assignment.assigned_at,
+            retrieval_bias=rule.retrieval_bias,
+            rebuild_urgency=rule.rebuild_urgency,
+            snapshot_residency=rule.snapshot_residency,
+            default_in_host_reads=rule.default_in_host_reads,
+            expunge_guarded=rule.expunge_guarded,
+        )
 
 
 @lru_cache(maxsize=1)
