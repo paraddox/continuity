@@ -1,0 +1,523 @@
+{
+  "explicit_missing_paths": [
+    {
+      "path": "src/continuity/daemon.py",
+      "reason": "The plan's proposed layout reserves a future daemon shell, but v1 coverage is intentionally carried by the transport-neutral API contract, deployment docs, and runtime-mode tests instead of an implemented daemon module."
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1.1",
+      "title": "Document Hermes-visible parity targets",
+      "status": "covered_with_manual_review",
+      "impl_refs": ["docs/hermes-compatibility.md"],
+      "proof_refs": ["tests/test_fixture_bundle.py", "tests/test_hermes_fixture_corpus.py", "tests/test_hermes_parity_fixtures.py"],
+      "manual_proof": ["Review Hermes compatibility documentation against the current Hermes honcho integration surface when parity targets change."],
+      "live_proof": []
+    },
+    {
+      "id": "1.2",
+      "title": "Define config and naming rules",
+      "status": "covered",
+      "impl_refs": ["src/continuity/config.py"],
+      "proof_refs": ["tests/test_config.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.3",
+      "title": "Define the minimal reasoning adapter interface",
+      "status": "covered",
+      "impl_refs": ["src/continuity/reasoning/base.py", "src/continuity/reasoning/codex_adapter.py"],
+      "proof_refs": ["tests/test_reasoning_contract.py", "tests/reasoning/test_adapter_contract.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.4",
+      "title": "Define subject-graph, observation, claim-ledger, and memory-locus invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/store/claims.py"],
+      "proof_refs": ["tests/test_claim_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.5",
+      "title": "Define belief revision invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/store/belief_revision.py", "src/continuity/epistemics.py"],
+      "proof_refs": ["tests/test_belief_revision_model.py", "tests/test_epistemics_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.6",
+      "title": "Define replay invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/replay.py"],
+      "proof_refs": ["tests/test_replay_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.7",
+      "title": "Define typed memory ontology",
+      "status": "covered",
+      "impl_refs": ["src/continuity/ontology.py"],
+      "proof_refs": ["tests/test_ontology.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.8",
+      "title": "Define versioned memory policy packs",
+      "status": "covered",
+      "impl_refs": ["src/continuity/policy.py"],
+      "proof_refs": ["tests/test_policy.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.9",
+      "title": "Define incremental compiler invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/compiler.py"],
+      "proof_refs": ["tests/test_compiler_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.10",
+      "title": "Define compiled view algebra",
+      "status": "covered",
+      "impl_refs": ["src/continuity/views.py", "src/continuity/context_builder.py"],
+      "proof_refs": ["tests/test_view_model.py", "tests/test_retrieval.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.11",
+      "title": "Define memory transaction pipeline",
+      "status": "covered",
+      "impl_refs": ["src/continuity/transactions.py"],
+      "proof_refs": ["tests/test_transaction_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.12",
+      "title": "Define durability contract",
+      "status": "covered",
+      "impl_refs": ["src/continuity/transactions.py", "src/continuity/service.py"],
+      "proof_refs": ["tests/test_durability_model.py", "tests/test_runtime_mode_contract.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.13",
+      "title": "Define mutation arbiter",
+      "status": "covered",
+      "impl_refs": ["src/continuity/arbiter.py"],
+      "proof_refs": ["tests/test_arbiter_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.14",
+      "title": "Define epistemic-status layer",
+      "status": "covered",
+      "impl_refs": ["src/continuity/epistemics.py"],
+      "proof_refs": ["tests/test_epistemics_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.15",
+      "title": "Define memory resolution queue",
+      "status": "covered",
+      "impl_refs": ["src/continuity/resolution_queue.py"],
+      "proof_refs": ["tests/test_resolution_queue_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.16",
+      "title": "Define outcome ledger",
+      "status": "covered",
+      "impl_refs": ["src/continuity/outcomes.py"],
+      "proof_refs": ["tests/test_outcomes_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.17",
+      "title": "Define memory utility ledger",
+      "status": "covered",
+      "impl_refs": ["src/continuity/utility.py"],
+      "proof_refs": ["tests/test_utility_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.18",
+      "title": "Define snapshot consistency invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/snapshots.py"],
+      "proof_refs": ["tests/test_snapshot_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.19",
+      "title": "Define generational tiering invariants",
+      "status": "covered",
+      "impl_refs": ["src/continuity/tiers.py"],
+      "proof_refs": ["tests/test_tiers_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.20",
+      "title": "Define budgeted prompt planner",
+      "status": "covered",
+      "impl_refs": ["src/continuity/prompt_planner.py"],
+      "proof_refs": ["tests/test_prompt_planner_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.21",
+      "title": "Define system event journal",
+      "status": "covered",
+      "impl_refs": ["src/continuity/events.py"],
+      "proof_refs": ["tests/test_event_journal_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.22",
+      "title": "Define disclosure/audience layer",
+      "status": "covered",
+      "impl_refs": ["src/continuity/disclosure.py"],
+      "proof_refs": ["tests/test_disclosure_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.23",
+      "title": "Define forgetting / retraction / erasure contract",
+      "status": "covered",
+      "impl_refs": ["src/continuity/forgetting.py"],
+      "proof_refs": ["tests/test_forgetting_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.24",
+      "title": "Define memory admission gate",
+      "status": "covered",
+      "impl_refs": ["src/continuity/admission.py"],
+      "proof_refs": ["tests/test_admission_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "1.25",
+      "title": "Define deployment modes and process boundary",
+      "status": "covered_with_manual_review",
+      "impl_refs": ["src/continuity/api.py", "src/continuity/service.py", "docs/architecture.md"],
+      "proof_refs": ["tests/test_runtime_mode_contract.py", "tests/test_api.py"],
+      "manual_proof": ["Review deployment-boundary documentation alongside the explicit daemon layout exception in this manifest."],
+      "live_proof": []
+    },
+    {
+      "id": "2.1",
+      "title": "Define SQLite schema",
+      "status": "covered",
+      "impl_refs": ["src/continuity/store/schema.py"],
+      "proof_refs": ["tests/test_schema.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.2",
+      "title": "Implement repository layer",
+      "status": "covered",
+      "impl_refs": ["src/continuity/store/sqlite.py", "src/continuity/store/claims.py", "src/continuity/store/replay.py"],
+      "proof_refs": ["tests/test_store.py", "tests/test_replay_store.py", "tests/test_admission_store.py", "tests/test_compiler_store.py", "tests/test_event_journal_store.py", "tests/test_forgetting_store.py", "tests/test_outcomes_store.py", "tests/test_resolution_queue_store.py", "tests/test_snapshots_store.py", "tests/test_tiers_store.py", "tests/test_utility_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.3",
+      "title": "Implement belief revision engine",
+      "status": "covered",
+      "impl_refs": ["src/continuity/store/belief_revision.py", "src/continuity/epistemics.py"],
+      "proof_refs": ["tests/test_belief_revision.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.4",
+      "title": "Implement transaction runner",
+      "status": "covered",
+      "impl_refs": ["src/continuity/transactions.py"],
+      "proof_refs": ["tests/test_transactions.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.5",
+      "title": "Implement mutation arbiter",
+      "status": "covered",
+      "impl_refs": ["src/continuity/arbiter.py"],
+      "proof_refs": ["tests/test_arbiter.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.6",
+      "title": "Implement system event journal",
+      "status": "covered",
+      "impl_refs": ["src/continuity/events.py"],
+      "proof_refs": ["tests/test_event_journal_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.7",
+      "title": "Implement replay artifact repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/replay.py", "src/continuity/store/replay.py"],
+      "proof_refs": ["tests/test_replay_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.8",
+      "title": "Implement outcome ledger repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/outcomes.py"],
+      "proof_refs": ["tests/test_outcomes_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.9",
+      "title": "Implement utility ledger repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/utility.py"],
+      "proof_refs": ["tests/test_utility_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.10",
+      "title": "Implement compiler state repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/compiler.py"],
+      "proof_refs": ["tests/test_compiler_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.11",
+      "title": "Implement snapshot repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/snapshots.py"],
+      "proof_refs": ["tests/test_snapshots_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.12",
+      "title": "Implement tier state repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/tiers.py"],
+      "proof_refs": ["tests/test_tiers_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.13",
+      "title": "Implement session manager on SQLite",
+      "status": "covered",
+      "impl_refs": ["src/continuity/session_manager.py"],
+      "proof_refs": ["tests/test_session_manager.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.14",
+      "title": "Implement forgetting repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/forgetting.py"],
+      "proof_refs": ["tests/test_forgetting_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.15",
+      "title": "Implement admission repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/admission.py"],
+      "proof_refs": ["tests/test_admission_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "2.16",
+      "title": "Implement resolution queue repository",
+      "status": "covered",
+      "impl_refs": ["src/continuity/resolution_queue.py"],
+      "proof_refs": ["tests/test_resolution_queue_store.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "3.1",
+      "title": "Implement Ollama embedding client",
+      "status": "covered_with_live_validation",
+      "impl_refs": ["src/continuity/embeddings/ollama.py"],
+      "proof_refs": ["tests/test_ollama_embeddings.py"],
+      "manual_proof": [],
+      "live_proof": ["Set CONTINUITY_RUN_LIVE_OLLAMA=1 and run tests/test_ollama_embeddings.py to exercise the real local Ollama path."]
+    },
+    {
+      "id": "3.2",
+      "title": "Implement zvec indexing",
+      "status": "covered_with_live_validation",
+      "impl_refs": ["src/continuity/index/zvec_index.py", "src/continuity/index/zvec_smoke.py", "docs/retrieval-backend-bootstrap.md"],
+      "proof_refs": ["tests/test_zvec_index.py", "tests/test_packaging_bootstrap.py"],
+      "manual_proof": [],
+      "live_proof": ["Follow docs/retrieval-backend-bootstrap.md and run python -m continuity.index.zvec_smoke against a real retrieval-zvec install."]
+    },
+    {
+      "id": "3.3",
+      "title": "Implement retrieval APIs",
+      "status": "covered",
+      "impl_refs": ["src/continuity/context_builder.py", "src/continuity/service.py", "src/continuity/api.py"],
+      "proof_refs": ["tests/test_retrieval.py", "tests/test_turn_artifacts.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "4.1",
+      "title": "Implement Codex reasoning adapter",
+      "status": "covered_with_live_validation",
+      "impl_refs": ["src/continuity/reasoning/codex_adapter.py"],
+      "proof_refs": ["tests/test_codex_adapter.py", "tests/reasoning/test_adapter_contract.py"],
+      "manual_proof": [],
+      "live_proof": ["Set CONTINUITY_RUN_LIVE_OPENAI=1 and run tests/test_codex_adapter.py with OPENAI_API_KEY set."]
+    },
+    {
+      "id": "4.2",
+      "title": "Implement claim derivation pipeline",
+      "status": "covered",
+      "impl_refs": ["src/continuity/reasoning/claim_derivation.py"],
+      "proof_refs": ["tests/test_claim_derivation.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "4.3",
+      "title": "Implement dialectic-style answers",
+      "status": "covered",
+      "impl_refs": ["src/continuity/context_builder.py"],
+      "proof_refs": ["tests/test_dialectic.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "4.4",
+      "title": "Capture turn decision records",
+      "status": "covered",
+      "impl_refs": ["src/continuity/replay.py", "src/continuity/context_builder.py"],
+      "proof_refs": ["tests/test_turn_artifacts.py", "tests/test_replay_model.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.1",
+      "title": "Implement incremental rebuild planner",
+      "status": "covered",
+      "impl_refs": ["src/continuity/compiler.py"],
+      "proof_refs": ["tests/test_compiler.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.2",
+      "title": "Implement snapshot builder and promoter",
+      "status": "covered",
+      "impl_refs": ["src/continuity/snapshots.py"],
+      "proof_refs": ["tests/test_snapshots_runtime.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.3",
+      "title": "Implement tiering and retention runtime",
+      "status": "covered",
+      "impl_refs": ["src/continuity/tiers.py"],
+      "proof_refs": ["tests/test_tiers_runtime.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.4",
+      "title": "Implement async prefetch",
+      "status": "covered",
+      "impl_refs": ["src/continuity/prefetch.py"],
+      "proof_refs": ["tests/test_prefetch.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.5",
+      "title": "Implement migration and identity seeding",
+      "status": "covered",
+      "impl_refs": ["src/continuity/migration.py"],
+      "proof_refs": ["tests/test_migration.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "5.6",
+      "title": "Expose a minimal host API",
+      "status": "covered",
+      "impl_refs": ["src/continuity/api.py", "src/continuity/service.py", "src/continuity/context_builder.py"],
+      "proof_refs": ["tests/test_api.py", "tests/test_runtime_mode_contract.py", "tests/test_service_contract_fixtures.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "6.1",
+      "title": "Add adapter conformance tests",
+      "status": "covered",
+      "impl_refs": ["tests/reasoning/test_adapter_contract.py"],
+      "proof_refs": ["tests/reasoning/test_adapter_contract.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "6.2",
+      "title": "Implement replay runner and evaluations",
+      "status": "covered",
+      "impl_refs": ["src/continuity/evals/replay_runner.py"],
+      "proof_refs": ["tests/test_replay_runner.py"],
+      "manual_proof": [],
+      "live_proof": []
+    },
+    {
+      "id": "6.3",
+      "title": "Document future adapter and deployment integration",
+      "status": "covered_with_manual_review",
+      "impl_refs": ["docs/architecture.md"],
+      "proof_refs": ["tests/test_runtime_mode_contract.py"],
+      "manual_proof": ["Review docs/architecture.md whenever deployment-shell expectations or future adapter guidance change."],
+      "live_proof": []
+    }
+  ]
+}
