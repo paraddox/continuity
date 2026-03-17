@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING
+from collections.abc import Callable
 
 from continuity.transactions import (
     DurabilityWaterline,
@@ -221,6 +222,7 @@ class MutationArbiter:
         reference_ids: tuple[str, ...] = (),
         snapshot_head_id: str | None = None,
         reached_waterline: DurabilityWaterline | None = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> PublishedMutation:
         from continuity.events import EventPayloadMode, SystemEvent
 
@@ -262,6 +264,8 @@ class MutationArbiter:
                 reference_ids=effective_reference_ids,
             )
             with self._connection:
+                if before_commit is not None:
+                    before_commit()
                 self._insert_publication_locked(publication)
                 self._journal._append_locked(event)
         return PublishedMutation(publication=publication, event=event)

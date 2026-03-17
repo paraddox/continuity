@@ -6,8 +6,14 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
-from continuity.transactions import TransactionKind
+from continuity.arbiter import ArbiterPublication, ArbiterPublicationKind, MutationArbiter
+from continuity.events import EventPayloadMode
+from continuity.transactions import DurabilityWaterline, TransactionKind, TransactionPhase
+
+if TYPE_CHECKING:
+    from continuity.events import SystemEvent
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -224,6 +230,61 @@ class SnapshotPromotionRecord:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class MaterializedSnapshot:
+    head_key: str
+    base_snapshot: MemorySnapshot
+    candidate_snapshot: MemorySnapshot
+    candidate_head: SnapshotHead
+    diff: SnapshotDiff
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "head_key", _clean_text(self.head_key, field_name="head_key"))
+        if self.candidate_head.state is not SnapshotHeadState.CANDIDATE:
+            raise ValueError("materialized snapshots require a candidate head")
+        if self.candidate_head.head_key != self.head_key:
+            raise ValueError("candidate_head must match the materialized head_key")
+        if self.candidate_head.snapshot_id != self.candidate_snapshot.snapshot_id:
+            raise ValueError("candidate_head must point at the materialized snapshot")
+        if self.candidate_head.based_on_snapshot_id != self.base_snapshot.snapshot_id:
+            raise ValueError("candidate_head must point at the base snapshot it was derived from")
+        if self.diff.from_snapshot_id != self.base_snapshot.snapshot_id:
+            raise ValueError("snapshot diff must start from the base snapshot")
+        if self.diff.to_snapshot_id != self.candidate_snapshot.snapshot_id:
+            raise ValueError("snapshot diff must end at the candidate snapshot")
+
+
+@dataclass(frozen=True, slots=True)
+class PublishedSnapshot:
+    head_key: str
+    materialized: MaterializedSnapshot
+    promotion: SnapshotPromotion
+    promotion_record: SnapshotPromotionRecord
+    publication: ArbiterPublication
+    event: SystemEvent
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "head_key", _clean_text(self.head_key, field_name="head_key"))
+        if self.materialized.head_key != self.head_key:
+            raise ValueError("materialized snapshot head_key must match the published head_key")
+        if self.promotion.new_active_head.head_key != self.head_key:
+            raise ValueError("published promotions must target the same head_key")
+        if self.promotion.previous_active_snapshot_id != self.materialized.base_snapshot.snapshot_id:
+            raise ValueError("published promotions must use the materialized base snapshot")
+        if self.promotion.promoted_snapshot_id != self.materialized.candidate_snapshot.snapshot_id:
+            raise ValueError("published promotions must promote the materialized candidate snapshot")
+        if self.promotion_record.head_key != self.head_key:
+            raise ValueError("promotion_record must match the published head_key")
+        if self.promotion_record.promoted_snapshot_id != self.promotion.promoted_snapshot_id:
+            raise ValueError("promotion_record must capture the promoted snapshot")
+        if self.publication.publication_kind is not ArbiterPublicationKind.SNAPSHOT_HEAD_PROMOTION:
+            raise ValueError("published snapshots require a snapshot head promotion publication")
+        if self.publication.phase is not TransactionPhase.PUBLISH_SNAPSHOT:
+            raise ValueError("published snapshots must publish during publish_snapshot")
+        if self.publication.reached_waterline is not DurabilityWaterline.SNAPSHOT_PUBLISHED:
+            raise ValueError("published snapshots must reach snapshot_published")
+
+
 class SnapshotRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
@@ -314,21 +375,19 @@ class SnapshotRepository:
 
     def upsert_head(self, head: SnapshotHead) -> None:
         with self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO snapshot_heads(head_key, state, snapshot_id, based_on_snapshot_id)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(head_key, state) DO UPDATE SET
-                    snapshot_id = excluded.snapshot_id,
-                    based_on_snapshot_id = excluded.based_on_snapshot_id
-                """,
-                (
-                    head.head_key,
-                    head.state.value,
-                    head.snapshot_id,
-                    head.based_on_snapshot_id,
-                ),
-            )
+            self._upsert_head_locked(head)
+
+    def delete_head(self, *, head_key: str, state: SnapshotHeadState) -> None:
+        with self._connection:
+            self._delete_head_locked(head_key=head_key, state=state)
+
+    def read_head(
+        self,
+        *,
+        head_key: str,
+        state: SnapshotHeadState,
+    ) -> SnapshotHead | None:
+        return self._read_head_locked(head_key=head_key, state=state)
 
     def list_heads(
         self,
@@ -433,25 +492,7 @@ class SnapshotRepository:
             recorded_at=recorded_at,
         )
         with self._connection:
-            self._connection.execute(
-                """
-                INSERT INTO snapshot_promotions(
-                    promotion_id,
-                    head_key,
-                    previous_active_snapshot_id,
-                    promoted_snapshot_id,
-                    recorded_at
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    promotion_record.promotion_id,
-                    promotion_record.head_key,
-                    promotion_record.previous_active_snapshot_id,
-                    promotion_record.promoted_snapshot_id,
-                    promotion_record.recorded_at.isoformat(),
-                ),
-            )
+            self._record_promotion_locked(promotion_record)
 
     def list_promotions(
         self,
@@ -486,16 +527,294 @@ class SnapshotRepository:
         head_key: str,
         state: SnapshotHeadState,
     ) -> MemorySnapshot | None:
-        head_rows = self.list_heads(head_key=head_key, state=state)
-        if not head_rows:
+        head = self._read_head_locked(head_key=head_key, state=state)
+        if head is None:
             return None
-        return self.read_snapshot(head_rows[0].snapshot_id)
+        return self.read_snapshot(head.snapshot_id)
+
+    def _upsert_head_locked(self, head: SnapshotHead) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO snapshot_heads(head_key, state, snapshot_id, based_on_snapshot_id)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(head_key, state) DO UPDATE SET
+                snapshot_id = excluded.snapshot_id,
+                based_on_snapshot_id = excluded.based_on_snapshot_id
+            """,
+            (
+                head.head_key,
+                head.state.value,
+                head.snapshot_id,
+                head.based_on_snapshot_id,
+            ),
+        )
+
+    def _delete_head_locked(
+        self,
+        *,
+        head_key: str,
+        state: SnapshotHeadState,
+    ) -> None:
+        self._connection.execute(
+            """
+            DELETE FROM snapshot_heads
+            WHERE head_key = ? AND state = ?
+            """,
+            (
+                _clean_text(head_key, field_name="head_key"),
+                state.value,
+            ),
+        )
+
+    def _read_head_locked(
+        self,
+        *,
+        head_key: str,
+        state: SnapshotHeadState,
+    ) -> SnapshotHead | None:
+        row = self._connection.execute(
+            """
+            SELECT head_key, state, snapshot_id, based_on_snapshot_id
+            FROM snapshot_heads
+            WHERE head_key = ? AND state = ?
+            """,
+            (
+                _clean_text(head_key, field_name="head_key"),
+                state.value,
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        return SnapshotHead(
+            head_key=row[0],
+            state=SnapshotHeadState(row[1]),
+            snapshot_id=row[2],
+            based_on_snapshot_id=row[3],
+        )
+
+    def _record_promotion_locked(self, promotion_record: SnapshotPromotionRecord) -> None:
+        self._connection.execute(
+            """
+            INSERT INTO snapshot_promotions(
+                promotion_id,
+                head_key,
+                previous_active_snapshot_id,
+                promoted_snapshot_id,
+                recorded_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                promotion_record.promotion_id,
+                promotion_record.head_key,
+                promotion_record.previous_active_snapshot_id,
+                promotion_record.promoted_snapshot_id,
+                promotion_record.recorded_at.isoformat(),
+            ),
+        )
+
+
+class SnapshotRuntime:
+    """Materialize and publish coherent snapshot heads without leaking mixed read state."""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        arbiter: MutationArbiter | None = None,
+        head_key: str = "current",
+    ) -> None:
+        self._connection = connection
+        self._snapshots = SnapshotRepository(connection)
+        self._arbiter = MutationArbiter(connection) if arbiter is None else arbiter
+        self._head_key = _clean_text(head_key, field_name="head_key")
+
+    @property
+    def arbiter(self) -> MutationArbiter:
+        return self._arbiter
+
+    def materialize_candidate(
+        self,
+        *,
+        candidate_snapshot_id: str,
+        policy_stamp: str,
+        created_by_transaction: TransactionKind,
+        added_artifacts: tuple[SnapshotArtifactRef, ...] | list[SnapshotArtifactRef],
+        removed_artifact_ids: tuple[str, ...] | list[str] = (),
+        base_snapshot_id: str | None = None,
+    ) -> MaterializedSnapshot:
+        base_snapshot = self._resolve_base_snapshot(base_snapshot_id=base_snapshot_id)
+        cleaned_removed_ids = tuple(
+            dict.fromkeys(
+                _clean_text(artifact_id, field_name="removed_artifact_ids")
+                for artifact_id in removed_artifact_ids
+            )
+        )
+        cleaned_added_artifacts = tuple(added_artifacts)
+
+        candidate_artifact_refs = [
+            artifact_ref
+            for artifact_ref in base_snapshot.artifact_refs
+            if artifact_ref.artifact_id not in cleaned_removed_ids
+        ]
+        candidate_artifact_refs.extend(cleaned_added_artifacts)
+
+        candidate_snapshot = MemorySnapshot(
+            snapshot_id=_clean_text(candidate_snapshot_id, field_name="candidate_snapshot_id"),
+            policy_stamp=_clean_text(policy_stamp, field_name="policy_stamp"),
+            parent_snapshot_id=base_snapshot.snapshot_id,
+            created_by_transaction=created_by_transaction,
+            artifact_refs=tuple(dict.fromkeys(candidate_artifact_refs)),
+        )
+        candidate_head = SnapshotHead(
+            head_key=self._head_key,
+            state=SnapshotHeadState.CANDIDATE,
+            snapshot_id=candidate_snapshot.snapshot_id,
+            based_on_snapshot_id=base_snapshot.snapshot_id,
+        )
+        self._snapshots.save_snapshot(candidate_snapshot)
+        self._snapshots.upsert_head(candidate_head)
+
+        return MaterializedSnapshot(
+            head_key=self._head_key,
+            base_snapshot=base_snapshot,
+            candidate_snapshot=candidate_snapshot,
+            candidate_head=candidate_head,
+            diff=diff_snapshots(base_snapshot, candidate_snapshot),
+        )
+
+    def promote_candidate(
+        self,
+        *,
+        promotion_id: str,
+        published_at: datetime,
+    ) -> PublishedSnapshot:
+        candidate_head = self._snapshots.read_head(
+            head_key=self._head_key,
+            state=SnapshotHeadState.CANDIDATE,
+        )
+        if candidate_head is None:
+            raise ValueError("promotion requires an existing candidate head")
+
+        base_head = self._resolve_active_head_for_candidate(candidate_head)
+        candidate_snapshot = self._require_snapshot(candidate_head.snapshot_id)
+        base_snapshot = self._require_snapshot(base_head.snapshot_id)
+        materialized = MaterializedSnapshot(
+            head_key=self._head_key,
+            base_snapshot=base_snapshot,
+            candidate_snapshot=candidate_snapshot,
+            candidate_head=candidate_head,
+            diff=diff_snapshots(base_snapshot, candidate_snapshot),
+        )
+        promotion = promote_candidate_head(
+            active_head=base_head,
+            candidate_head=candidate_head,
+        )
+        promotion_record = SnapshotPromotionRecord(
+            promotion_id=_clean_text(promotion_id, field_name="promotion_id"),
+            head_key=self._head_key,
+            previous_active_snapshot_id=promotion.previous_active_snapshot_id,
+            promoted_snapshot_id=promotion.promoted_snapshot_id,
+            recorded_at=_validate_timestamp(published_at, field_name="published_at"),
+        )
+
+        published_mutation = self._arbiter.publish(
+            publication_kind=ArbiterPublicationKind.SNAPSHOT_HEAD_PROMOTION,
+            transaction_kind=TransactionKind.PUBLISH_SNAPSHOT,
+            phase=TransactionPhase.PUBLISH_SNAPSHOT,
+            object_ids=(
+                promotion.previous_active_snapshot_id,
+                promotion.promoted_snapshot_id,
+            ),
+            published_at=promotion_record.recorded_at,
+            payload_mode=EventPayloadMode.REFERENCE,
+            reference_ids=(promotion.promoted_snapshot_id,),
+            snapshot_head_id=f"head:{self._head_key}",
+            reached_waterline=DurabilityWaterline.SNAPSHOT_PUBLISHED,
+            before_commit=lambda: self._commit_promotion_locked(
+                candidate_head=candidate_head,
+                expected_base_snapshot_id=base_snapshot.snapshot_id,
+                active_head=promotion.new_active_head,
+                promotion_record=promotion_record,
+            ),
+        )
+
+        return PublishedSnapshot(
+            head_key=self._head_key,
+            materialized=materialized,
+            promotion=promotion,
+            promotion_record=promotion_record,
+            publication=published_mutation.publication,
+            event=published_mutation.event,
+        )
+
+    def _resolve_base_snapshot(self, *, base_snapshot_id: str | None) -> MemorySnapshot:
+        if base_snapshot_id is None:
+            active_snapshot = self._snapshots.read_active_snapshot(head_key=self._head_key)
+            if active_snapshot is None:
+                raise ValueError("materializing a candidate snapshot requires an active base snapshot")
+            return active_snapshot
+
+        return self._require_snapshot(base_snapshot_id)
+
+    def _resolve_active_head_for_candidate(self, candidate_head: SnapshotHead) -> SnapshotHead:
+        active_head = self._snapshots.read_head(
+            head_key=self._head_key,
+            state=SnapshotHeadState.ACTIVE,
+        )
+        if active_head is not None:
+            return active_head
+
+        assert candidate_head.based_on_snapshot_id is not None
+        self._require_snapshot(candidate_head.based_on_snapshot_id)
+        return SnapshotHead(
+            head_key=self._head_key,
+            state=SnapshotHeadState.ACTIVE,
+            snapshot_id=candidate_head.based_on_snapshot_id,
+        )
+
+    def _commit_promotion_locked(
+        self,
+        *,
+        candidate_head: SnapshotHead,
+        expected_base_snapshot_id: str,
+        active_head: SnapshotHead,
+        promotion_record: SnapshotPromotionRecord,
+    ) -> None:
+        current_candidate = self._snapshots._read_head_locked(
+            head_key=self._head_key,
+            state=SnapshotHeadState.CANDIDATE,
+        )
+        if current_candidate != candidate_head:
+            raise ValueError("candidate head changed before promotion")
+
+        current_active = self._snapshots._read_head_locked(
+            head_key=self._head_key,
+            state=SnapshotHeadState.ACTIVE,
+        )
+        if current_active is None:
+            if candidate_head.based_on_snapshot_id != expected_base_snapshot_id:
+                raise ValueError("candidate head base snapshot changed before promotion")
+            self._require_snapshot(expected_base_snapshot_id)
+        elif current_active.snapshot_id != expected_base_snapshot_id:
+            raise ValueError("active snapshot changed before promotion")
+
+        self._snapshots._upsert_head_locked(active_head)
+        self._snapshots._delete_head_locked(
+            head_key=self._head_key,
+            state=SnapshotHeadState.CANDIDATE,
+        )
+        self._snapshots._record_promotion_locked(promotion_record)
+
+    def _require_snapshot(self, snapshot_id: str) -> MemorySnapshot:
+        cleaned_snapshot_id = _clean_text(snapshot_id, field_name="snapshot_id")
+        snapshot = self._snapshots.read_snapshot(cleaned_snapshot_id)
+        if snapshot is None:
+            raise ValueError(f"unknown snapshot: {cleaned_snapshot_id}")
+        return snapshot
 
 
 def diff_snapshots(from_snapshot: MemorySnapshot, to_snapshot: MemorySnapshot) -> SnapshotDiff:
-    if from_snapshot.policy_stamp != to_snapshot.policy_stamp:
-        raise ValueError("snapshot diffs require a shared policy stamp")
-
     from_refs = set(from_snapshot.artifact_refs)
     to_refs = set(to_snapshot.artifact_refs)
 
