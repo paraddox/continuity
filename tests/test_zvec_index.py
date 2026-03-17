@@ -50,6 +50,7 @@ from continuity.store.sqlite import (
     StoredDisclosurePolicy,
 )
 
+import continuity.index.zvec_index as zvec_index_module
 from continuity.index.zvec_index import IndexSourceKind, InMemoryZvecBackend, ZvecIndex
 
 
@@ -287,6 +288,18 @@ def seed_memory_state(connection: sqlite3.Connection) -> None:
 
 
 class ZvecIndexTests(unittest.TestCase):
+    def test_zvec_document_ids_are_stable_and_backend_safe(self) -> None:
+        self.assertTrue(
+            hasattr(zvec_index_module, "_zvec_document_id"),
+            "zvec backend should expose a stable document-id encoder for backend-safe IDs",
+        )
+        encoded = zvec_index_module._zvec_document_id("vector:claim:claim-1")
+
+        self.assertRegex(encoded, r"^record_[0-9a-f]{56}$")
+        self.assertLessEqual(len(encoded), 63)
+        self.assertEqual(encoded, zvec_index_module._zvec_document_id("vector:claim:claim-1"))
+        self.assertNotEqual(encoded, zvec_index_module._zvec_document_id("vector:claim:claim-2"))
+
     def test_rebuild_from_sqlite_indexes_all_supported_source_kinds(self) -> None:
         connection = open_memory_database()
         self.addCleanup(connection.close)

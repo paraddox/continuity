@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -64,6 +64,22 @@ def _parse_timestamp(value: str, *, field_name: str) -> datetime:
 def _hash_fingerprint(payload: Any) -> str:
     serialized = _json_dumps(payload).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def _zvec_document_id(record_id: str) -> str:
+    cleaned_record_id = _clean_text(record_id, field_name="record_id")
+    digest = hashlib.sha256(cleaned_record_id.encode("utf-8")).hexdigest()
+    return f"record_{digest[:56]}"
+
+
+def _zvec_result_record_id(result: Any) -> str:
+    fields = getattr(result, "fields", None)
+    if not isinstance(fields, Mapping):
+        raise RuntimeError("zvec query result is missing fields metadata")
+    record_id = fields.get("record_id")
+    if not isinstance(record_id, str):
+        raise RuntimeError("zvec query result is missing the authoritative record_id field")
+    return _clean_text(record_id, field_name="record_id")
 
 
 def _dot(left: Sequence[float], right: Sequence[float]) -> float:
@@ -294,6 +310,7 @@ class ZvecBackend:
             schema=self._zvec.CollectionSchema(
                 name=_clean_text(collection_name, field_name="collection_name"),
                 fields=[
+                    self._zvec.FieldSchema("record_id", self._zvec.DataType.STRING),
                     self._zvec.FieldSchema("source_kind", self._zvec.DataType.STRING),
                     self._zvec.FieldSchema("source_id", self._zvec.DataType.STRING),
                     self._zvec.FieldSchema("subject_id", self._zvec.DataType.STRING, nullable=True),
@@ -321,9 +338,10 @@ class ZvecBackend:
         statuses = self._collection.upsert(
             [
                 self._zvec.Doc(
-                    id=document.record.record_id,
+                    id=_zvec_document_id(document.record.record_id),
                     vectors={"embedding": list(document.vector)},
                     fields={
+                        "record_id": document.record.record_id,
                         "source_kind": document.record.source_kind.value,
                         "source_id": document.record.source_id,
                         "subject_id": document.record.subject_id,
@@ -342,7 +360,7 @@ class ZvecBackend:
         self._collection.flush()
 
     def delete_documents(self, document_ids: Iterable[str]) -> None:  # pragma: no cover - real backend path
-        ids = tuple(_clean_text(document_id, field_name="document_id") for document_id in document_ids)
+        ids = tuple(_zvec_document_id(document_id) for document_id in document_ids)
         if not ids:
             return
         statuses = self._collection.delete(list(ids))
@@ -362,12 +380,12 @@ class ZvecBackend:
             vectors=self._zvec.VectorQuery("embedding", vector=list(query_vector)),
             topk=_validate_topk(topk),
             filter=filter_expr,
-            output_fields=("source_kind", "source_id"),
+            output_fields=("record_id", "source_kind", "source_id"),
             include_vector=False,
         )
         return tuple(
             ScoredDocument(
-                record_id=_clean_text(str(result.id), field_name="record_id"),
+                record_id=_zvec_result_record_id(result),
                 score=float(result.score),
             )
             for result in raw_results
