@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Mapping, Sequence
@@ -13,11 +14,12 @@ from typing import Any
 from continuity.config import normalize_recall_mode
 from continuity.disclosure import (
     DisclosureAction,
+    DisclosureDecision,
     DisclosureContext,
     disclosure_policy_for,
     evaluate_disclosure,
 )
-from continuity.epistemics import EpistemicStatus, resolve_locus_belief
+from continuity.epistemics import EpistemicStatus, answer_mode_for_status, resolve_locus_belief
 from continuity.forgetting import ForgettingTarget, ForgettingTargetKind
 from continuity.index.zvec_index import (
     EmbeddingClientProtocol,
@@ -42,6 +44,7 @@ from continuity.service import (
     ServiceOperation,
     ServiceResponse,
 )
+from continuity.reasoning.base import AnswerQueryRequest, ReasoningAdapter, ReasoningMessage
 from continuity.store.belief_revision import BeliefStateRepository, StoredBeliefState
 from continuity.store.claims import (
     AdmissionOutcome,
@@ -158,11 +161,13 @@ class ContinuityContextBuilder:
         policy_name: str = "hermes_v1",
         prompt_hard_token_budget: int | None = None,
         prompt_soft_token_budgets: Mapping[str, int] | None = None,
+        reasoning_adapter: ReasoningAdapter | None = None,
     ) -> None:
         self._connection = connection
         self._repository = SQLiteRepository(connection)
         self._beliefs = BeliefStateRepository(connection)
         self._policy = get_policy_pack(_clean_text(policy_name, field_name="policy_name"))
+        self._reasoning_adapter = reasoning_adapter
         self._index = ZvecIndex(
             connection=connection,
             embedding_client=embedding_client,
@@ -627,6 +632,120 @@ class ContinuityContextBuilder:
             },
         )
 
+    def build_answer_view(
+        self,
+        *,
+        question: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str | None = None,
+        subject_id: str | None = None,
+    ) -> AssembledView:
+        cleaned_question = _clean_text(question, field_name="question")
+        resolved_subject_id = self._answer_subject_id(
+            subject_id=subject_id,
+            disclosure_context=disclosure_context,
+        )
+        subject = self._subject(resolved_subject_id)
+        snapshot_id = self._resolve_snapshot_id(target_snapshot_id)
+        relevant_views = tuple(
+            result.view
+            for result in self.search(
+                query_text=cleaned_question,
+                disclosure_context=disclosure_context,
+                target_snapshot_id=snapshot_id,
+                limit=4,
+                subject_id=resolved_subject_id,
+            )
+        )
+        if not relevant_views:
+            relevant_views = self._fallback_answer_views(
+                subject_id=resolved_subject_id,
+                disclosure_context=disclosure_context,
+                target_snapshot_id=snapshot_id,
+            )
+
+        primary_status = (
+            relevant_views[0].compiled_view.epistemic_status
+            if relevant_views
+            else EpistemicStatus.UNKNOWN
+        )
+        current_beliefs, historical_context, citations = self._answer_context_sections(
+            relevant_views,
+            disclosure_context=disclosure_context,
+        )
+        visible_claim_ids = tuple(
+            dict.fromkeys(
+                citation["claim_id"]
+                for citation in citations
+                if isinstance(citation.get("claim_id"), str)
+            )
+        )
+        visible_observation_ids = tuple(
+            dict.fromkeys(
+                observation_id
+                for citation in citations
+                for observation_id in citation.get("observation_ids", ())
+                if isinstance(observation_id, str)
+            )
+        )
+        hidden_claim_ids = self._hidden_claim_ids_for_subject(
+            subject_id=resolved_subject_id,
+            disclosure_context=disclosure_context,
+        )
+
+        if current_beliefs or historical_context:
+            answer_mode = answer_mode_for_status(primary_status).value
+            disclosure_result = "visible"
+        elif hidden_claim_ids:
+            answer_mode = "abstain"
+            disclosure_result = "withheld"
+            primary_status = EpistemicStatus.UNKNOWN
+        else:
+            answer_mode = "abstain"
+            disclosure_result = "unknown"
+            primary_status = EpistemicStatus.UNKNOWN
+
+        answer_text = self._answer_text(
+            question=cleaned_question,
+            subject=subject,
+            current_beliefs=current_beliefs,
+            historical_context=historical_context,
+            citations=citations,
+            epistemic_status=primary_status,
+            answer_mode=answer_mode,
+            disclosure_result=disclosure_result,
+        )
+        claim_ids = (
+            visible_claim_ids
+            or hidden_claim_ids
+            or (self._synthetic_answer_claim_id(cleaned_question, resolved_subject_id),)
+        )
+        answer_view_key = self._answer_view_key(cleaned_question, resolved_subject_id)
+
+        return AssembledView(
+            compiled_view=CompiledView(
+                kind=ViewKind.ANSWER,
+                view_key=answer_view_key,
+                policy_stamp=self._policy.policy_stamp,
+                snapshot_id=snapshot_id,
+                claim_ids=claim_ids,
+                observation_ids=visible_observation_ids,
+                epistemic_status=primary_status,
+            ),
+            payload={
+                "question": cleaned_question,
+                "subject_id": resolved_subject_id,
+                "subject_name": subject.canonical_name,
+                "answer_text": answer_text,
+                "answer_mode": answer_mode,
+                "epistemic_status": primary_status.value,
+                "disclosure_result": disclosure_result,
+                "current_beliefs": current_beliefs,
+                "historical_context": historical_context,
+                "citations": citations,
+            },
+        )
+
     def build_evidence_view(
         self,
         *,
@@ -730,6 +849,7 @@ class ContinuityContextBuilder:
             ServiceOperation.GET_TIMELINE_VIEW: self._execute_timeline_view,
             ServiceOperation.GET_PROFILE_VIEW: self._execute_profile_view,
             ServiceOperation.GET_PROMPT_VIEW: self._execute_prompt_view,
+            ServiceOperation.ANSWER_MEMORY_QUESTION: self._execute_answer_view,
             ServiceOperation.LIST_MEMORY_FOLLOW_UPS: self._execute_follow_ups,
             ServiceOperation.RESOLVE_SUBJECT: self._execute_resolve_subject,
             ServiceOperation.INSPECT_EVIDENCE: self._execute_evidence_view,
@@ -813,6 +933,19 @@ class ContinuityContextBuilder:
             payload={"view": self._view_payload(view)},
         )
 
+    def _execute_answer_view(self, request: ResolvedServiceRequest) -> ServiceResponse:
+        payload = request.request.payload
+        view = self.build_answer_view(
+            question=str(payload["question"]),
+            subject_id=payload.get("subject_id"),
+            disclosure_context=request.request.disclosure_context,
+            target_snapshot_id=request.request.target_snapshot_id,
+        )
+        return ServiceResponse(
+            operation=request.request.operation,
+            payload={"view": self._view_payload(view)},
+        )
+
     def _execute_follow_ups(self, request: ResolvedServiceRequest) -> ServiceResponse:
         payload = request.request.payload
         items = self.list_memory_follow_ups(
@@ -861,6 +994,268 @@ class ContinuityContextBuilder:
             operation=request.request.operation,
             payload={"view": self._view_payload(view)},
         )
+
+    def _answer_subject_id(
+        self,
+        *,
+        subject_id: str | None,
+        disclosure_context: DisclosureContext,
+    ) -> str:
+        resolved_subject_id = _optional_clean_text(subject_id, field_name="subject_id")
+        if resolved_subject_id is not None:
+            return resolved_subject_id
+        if disclosure_context.viewer.active_user_id is not None:
+            return disclosure_context.viewer.active_user_id
+        if disclosure_context.viewer.active_peer_id is not None:
+            return disclosure_context.viewer.active_peer_id
+        raise ValueError("answer assembly requires a subject_id or an active subject in disclosure_context")
+
+    def _fallback_answer_views(
+        self,
+        *,
+        subject_id: str,
+        disclosure_context: DisclosureContext,
+        target_snapshot_id: str,
+    ) -> tuple[AssembledView, ...]:
+        state_like_views = self._state_like_views_for_subject(
+            subject_id=subject_id,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+        if state_like_views:
+            return state_like_views[:1]
+        timeline_views = self._timeline_views_for_subject(
+            subject_id=subject_id,
+            disclosure_context=disclosure_context,
+            target_snapshot_id=target_snapshot_id,
+        )
+        return timeline_views[:1]
+
+    def _answer_context_sections(
+        self,
+        views: tuple[AssembledView, ...],
+        *,
+        disclosure_context: DisclosureContext,
+    ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...], tuple[dict[str, object], ...]]:
+        current_beliefs: list[dict[str, object]] = []
+        historical_context: list[dict[str, object]] = []
+        citations_by_claim_id: dict[str, dict[str, object]] = {}
+
+        def add_summary(
+            items: list[dict[str, object]],
+            *,
+            summary: str,
+            view_key: str,
+        ) -> None:
+            if any(existing["summary"] == summary for existing in items):
+                return
+            items.append({"view_key": view_key, "summary": summary})
+
+        for view in views:
+            if view.compiled_view.kind in {ViewKind.STATE, ViewKind.SET}:
+                summary = str(view.payload.get("summary", "")).strip()
+                if summary:
+                    add_summary(
+                        current_beliefs,
+                        summary=summary,
+                        view_key=view.compiled_view.view_key,
+                    )
+                active_claim_ids = tuple(view.payload.get("active_claim_ids", ())) or view.compiled_view.claim_ids
+                for claim_id in active_claim_ids:
+                    citation = self._citation_payload(
+                        claim_id,
+                        disclosure_context=disclosure_context,
+                    )
+                    if citation is not None:
+                        citations_by_claim_id.setdefault(claim_id, citation)
+
+                historical_claim_ids = tuple(view.payload.get("historical_claim_ids", ()))
+                for claim_id in historical_claim_ids:
+                    if claim_id in active_claim_ids:
+                        continue
+                    claim = self._repository.read_claim(claim_id)
+                    if claim is None or not self._claim_visible(claim, disclosure_context):
+                        continue
+                    history_summary = f"Earlier evidence said {self._claim_summary(claim)}."
+                    add_summary(
+                        historical_context,
+                        summary=history_summary,
+                        view_key=view.compiled_view.view_key,
+                    )
+                    citation = self._citation_payload(
+                        claim_id,
+                        disclosure_context=disclosure_context,
+                    )
+                    if citation is not None:
+                        citations_by_claim_id.setdefault(claim_id, citation)
+            elif view.compiled_view.kind is ViewKind.TIMELINE:
+                entries = tuple(view.payload.get("entries", ()))
+                if entries and not historical_context:
+                    timeline_summary = "Timeline: " + " -> ".join(
+                        str(entry.get("value", "")).strip()
+                        for entry in entries
+                        if str(entry.get("value", "")).strip()
+                    )
+                    add_summary(
+                        historical_context,
+                        summary=timeline_summary,
+                        view_key=view.compiled_view.view_key,
+                    )
+                for claim_id in view.compiled_view.claim_ids:
+                    citation = self._citation_payload(
+                        claim_id,
+                        disclosure_context=disclosure_context,
+                    )
+                    if citation is not None:
+                        citations_by_claim_id.setdefault(claim_id, citation)
+
+        ordered_citations = tuple(
+            citations_by_claim_id[claim_id]
+            for claim_id in citations_by_claim_id
+        )
+        return tuple(current_beliefs), tuple(historical_context), ordered_citations
+
+    def _citation_payload(
+        self,
+        claim_id: str,
+        *,
+        disclosure_context: DisclosureContext,
+    ) -> dict[str, object] | None:
+        claim = self._repository.read_claim(claim_id)
+        if claim is None or not self._claim_visible(claim, disclosure_context):
+            return None
+        return {
+            "claim_id": claim.claim_id,
+            "summary": self._claim_summary(claim),
+            "observation_ids": tuple(
+                observation_id
+                for observation_id in claim.provenance.observation_ids
+                if self._observation_visible(observation_id)
+            ),
+        }
+
+    def _hidden_claim_ids_for_subject(
+        self,
+        *,
+        subject_id: str,
+        disclosure_context: DisclosureContext,
+    ) -> tuple[str, ...]:
+        return tuple(
+            claim.claim_id
+            for claim in self._repository.list_claims(subject_id=subject_id)
+            if not self._claim_visible(claim, disclosure_context)
+        )
+
+    def _answer_text(
+        self,
+        *,
+        question: str,
+        subject: Subject,
+        current_beliefs: tuple[dict[str, object], ...],
+        historical_context: tuple[dict[str, object], ...],
+        citations: tuple[dict[str, object], ...],
+        epistemic_status: EpistemicStatus,
+        answer_mode: str,
+        disclosure_result: str,
+    ) -> str:
+        if disclosure_result == "withheld":
+            return "I have relevant memory here, but it is withheld for this audience."
+        if disclosure_result == "unknown":
+            return "I don't know enough to answer that yet."
+        if answer_mode == "ask_confirmation":
+            return "I have related memory, but I need confirmation before I answer decisively."
+        if answer_mode == "abstain":
+            return "I can't answer that confidently from the current memory state."
+
+        base_text = self._render_answer_text(
+            question=question,
+            subject=subject,
+            current_beliefs=current_beliefs,
+            historical_context=historical_context,
+            citations=citations,
+            epistemic_status=epistemic_status,
+        )
+        if answer_mode == "qualify":
+            return f"This may be outdated, but {base_text}"
+        return base_text
+
+    def _render_answer_text(
+        self,
+        *,
+        question: str,
+        subject: Subject,
+        current_beliefs: tuple[dict[str, object], ...],
+        historical_context: tuple[dict[str, object], ...],
+        citations: tuple[dict[str, object], ...],
+        epistemic_status: EpistemicStatus,
+    ) -> str:
+        if self._reasoning_adapter is None:
+            if current_beliefs:
+                return str(current_beliefs[0]["summary"])
+            if historical_context:
+                return str(historical_context[0]["summary"])
+            return f"I don't know enough about {subject.canonical_name} to answer that yet."
+
+        request = AnswerQueryRequest(
+            query=question,
+            messages=self._answer_reasoning_messages(
+                subject=subject,
+                current_beliefs=current_beliefs,
+                historical_context=historical_context,
+                citations=citations,
+                epistemic_status=epistemic_status,
+            ),
+        )
+        return self._reasoning_adapter.answer_query(request).text.strip()
+
+    def _answer_reasoning_messages(
+        self,
+        *,
+        subject: Subject,
+        current_beliefs: tuple[dict[str, object], ...],
+        historical_context: tuple[dict[str, object], ...],
+        citations: tuple[dict[str, object], ...],
+        epistemic_status: EpistemicStatus,
+    ) -> tuple[ReasoningMessage, ...]:
+        messages = [
+            ReasoningMessage(
+                role="user",
+                content=f"Subject: {subject.canonical_name}.",
+            ),
+            ReasoningMessage(
+                role="user",
+                content=f"Epistemic status: {epistemic_status.value}.",
+            ),
+        ]
+        messages.extend(
+            ReasoningMessage(role="user", content=f"Current belief: {item['summary']}")
+            for item in current_beliefs
+        )
+        messages.extend(
+            ReasoningMessage(role="user", content=f"Superseded history: {item['summary']}")
+            for item in historical_context
+        )
+        if citations:
+            messages.append(
+                ReasoningMessage(
+                    role="user",
+                    content="Citations: " + ", ".join(
+                        str(citation["claim_id"])
+                        for citation in citations
+                    ),
+                )
+            )
+        return tuple(messages)
+
+    @staticmethod
+    def _synthetic_answer_claim_id(question: str, subject_id: str) -> str:
+        digest = hashlib.sha256(f"{subject_id}\0{question}".encode("utf-8")).hexdigest()
+        return f"answer_context:{digest[:16]}"
+
+    @staticmethod
+    def _answer_view_key(question: str, subject_id: str) -> str:
+        digest = hashlib.sha256(f"{subject_id}\0{question}".encode("utf-8")).hexdigest()
+        return f"answer:{subject_id}:{digest[:12]}"
 
     def _visible_projection(
         self,
@@ -925,6 +1320,16 @@ class ContinuityContextBuilder:
             raise LookupError(subject_id)
         return subject
 
+    def _claim_disclosure_decision(
+        self,
+        claim: Claim,
+        disclosure_context: DisclosureContext,
+    ) -> DisclosureDecision:
+        return evaluate_disclosure(
+            disclosure_policy_for(claim.disclosure_policy),
+            disclosure_context,
+        )
+
     def _claim_visible(self, claim: Claim, disclosure_context: DisclosureContext) -> bool:
         if self._ordinary_read_blocked(
             ForgettingTarget(ForgettingTargetKind.CLAIM, claim.claim_id)
@@ -942,11 +1347,7 @@ class ContinuityContextBuilder:
         ):
             return False
 
-        disclosure = evaluate_disclosure(
-            disclosure_policy_for(claim.disclosure_policy),
-            disclosure_context,
-        )
-        return disclosure.exposes_content
+        return self._claim_disclosure_decision(claim, disclosure_context).exposes_content
 
     def _observation_visible(self, observation_id: str) -> bool:
         return not self._ordinary_read_blocked(
