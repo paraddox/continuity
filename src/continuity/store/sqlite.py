@@ -10,7 +10,7 @@ from typing import Any
 
 from continuity.admission import AdmissionDecisionTrace, AdmissionRepository
 from continuity.forgetting import ForgettingRecord, ForgettingRepository, ForgettingTarget
-from continuity.outcomes import OutcomeTarget
+from continuity.outcomes import OutcomeLabel, OutcomeRepository, OutcomeRecord, OutcomeTarget
 from continuity.resolution_queue import ResolutionQueueRepository, ResolutionQueueItem, ResolutionSurface
 from continuity.store.replay import ReplayRepository
 from continuity.store.claims import (
@@ -29,7 +29,7 @@ from continuity.store.claims import (
     SubjectMergeRecord,
     SubjectSplitRecord,
 )
-from continuity.utility import CompiledUtilityWeight, UtilitySignal
+from continuity.utility import CompiledUtilityWeight, UtilityRepository
 
 
 def _clean_text(value: str, *, field_name: str) -> str:
@@ -184,8 +184,10 @@ class SQLiteRepository:
         self._connection.row_factory = sqlite3.Row
         self.admissions = AdmissionRepository(connection)
         self.forgetting = ForgettingRepository(connection)
+        self.outcomes = OutcomeRepository(connection)
         self.replay = ReplayRepository(connection)
         self.resolution_queue = ResolutionQueueRepository(connection)
+        self.utility = UtilityRepository(connection)
 
     def save_disclosure_policy(self, policy: StoredDisclosurePolicy) -> None:
         with self._connection:
@@ -816,6 +818,27 @@ class SQLiteRepository:
     def current_forgetting_record(self, target: ForgettingTarget) -> ForgettingRecord | None:
         return self.forgetting.current_record_for_target(target)
 
+    def read_outcome_record(self, outcome_id: str) -> OutcomeRecord | None:
+        return self.outcomes.read_record(outcome_id)
+
+    def list_outcome_records(
+        self,
+        *,
+        target: OutcomeTarget | None = None,
+        target_id: str | None = None,
+        label: str | None = None,
+        actor_subject_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[OutcomeRecord, ...]:
+        outcome_label = None if label is None else OutcomeLabel(label)
+        return self.outcomes.list_records(
+            target=target,
+            target_id=target_id,
+            label=outcome_label,
+            actor_subject_id=actor_subject_id,
+            limit=limit,
+        )
+
     def read_compiled_utility_weight(
         self,
         *,
@@ -823,37 +846,10 @@ class SQLiteRepository:
         target_id: str,
         policy_stamp: str,
     ) -> CompiledUtilityWeight | None:
-        row = self._connection.execute(
-            """
-            SELECT
-                target,
-                target_id,
-                policy_stamp,
-                weighted_score,
-                signal_counts_json,
-                source_event_ids_json
-            FROM compiled_utility_weights
-            WHERE target = ? AND target_id = ? AND policy_stamp = ?
-            """,
-            (
-                target.value,
-                _clean_text(target_id, field_name="target_id"),
-                _clean_text(policy_stamp, field_name="policy_stamp"),
-            ),
-        ).fetchone()
-        if row is None:
-            return None
-        signal_counts_payload = _load_json_object(row["signal_counts_json"])
-        return CompiledUtilityWeight(
-            target=OutcomeTarget(row["target"]),
-            target_id=row["target_id"],
-            policy_stamp=row["policy_stamp"],
-            weighted_score=row["weighted_score"],
-            signal_counts=tuple(
-                (UtilitySignal(signal), int(count))
-                for signal, count in signal_counts_payload.items()
-            ),
-            source_event_ids=tuple(_load_json_list(row["source_event_ids_json"])),
+        return self.utility.read_compiled_weight(
+            target=target,
+            target_id=target_id,
+            policy_stamp=policy_stamp,
         )
 
     def _replace_subject_collections(self, subject: Subject, *, recorded_at: datetime) -> None:

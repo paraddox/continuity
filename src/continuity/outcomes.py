@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -24,6 +26,10 @@ def _validate_timestamp(value: datetime, *, field_name: str) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{field_name} must be timezone-aware")
     return value
+
+
+def _parse_timestamp(value: str, *, field_name: str) -> datetime:
+    return _validate_timestamp(datetime.fromisoformat(value), field_name=field_name)
 
 
 def _dedupe_cleaned(values: tuple[str, ...], *, field_name: str) -> tuple[str, ...]:
@@ -105,3 +111,140 @@ class OutcomeRecord:
             OutcomeLabel.USER_CORRECTED,
             OutcomeLabel.STALE_ON_USE,
         }
+
+
+class OutcomeRepository:
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def record_outcome(self, record: OutcomeRecord) -> None:
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO outcome_records(
+                    outcome_id,
+                    label,
+                    target,
+                    target_id,
+                    policy_stamp,
+                    recorded_at,
+                    rationale,
+                    actor_subject_id,
+                    claim_ids_json,
+                    observation_ids_json,
+                    capture_for_replay
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.outcome_id,
+                    record.label.value,
+                    record.target.value,
+                    record.target_id,
+                    record.policy_stamp,
+                    record.recorded_at.isoformat(),
+                    record.rationale,
+                    record.actor_subject_id,
+                    json.dumps(record.claim_ids),
+                    json.dumps(record.observation_ids),
+                    int(record.capture_for_replay),
+                ),
+            )
+
+    def read_record(self, outcome_id: str) -> OutcomeRecord | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                outcome_id,
+                label,
+                target,
+                target_id,
+                policy_stamp,
+                recorded_at,
+                rationale,
+                actor_subject_id,
+                claim_ids_json,
+                observation_ids_json,
+                capture_for_replay
+            FROM outcome_records
+            WHERE outcome_id = ?
+            """,
+            (_clean_text(outcome_id, field_name="outcome_id"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._record_from_row(row)
+
+    def list_records(
+        self,
+        *,
+        target: OutcomeTarget | None = None,
+        target_id: str | None = None,
+        label: OutcomeLabel | None = None,
+        actor_subject_id: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[OutcomeRecord, ...]:
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be non-negative")
+
+        conditions: list[str] = []
+        params: list[str] = []
+        if target is not None:
+            conditions.append("target = ?")
+            params.append(target.value)
+        if target_id is not None:
+            conditions.append("target_id = ?")
+            params.append(_clean_text(target_id, field_name="target_id"))
+        if label is not None:
+            conditions.append("label = ?")
+            params.append(label.value)
+        if actor_subject_id is not None:
+            conditions.append("actor_subject_id = ?")
+            params.append(_clean_text(actor_subject_id, field_name="actor_subject_id"))
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        limit_clause = ""
+        if limit is not None:
+            limit_clause = f"LIMIT {limit}"
+
+        rows = self._connection.execute(
+            f"""
+            SELECT
+                outcome_id,
+                label,
+                target,
+                target_id,
+                policy_stamp,
+                recorded_at,
+                rationale,
+                actor_subject_id,
+                claim_ids_json,
+                observation_ids_json,
+                capture_for_replay
+            FROM outcome_records
+            {where_clause}
+            ORDER BY recorded_at DESC, outcome_id DESC
+            {limit_clause}
+            """,
+            tuple(params),
+        ).fetchall()
+        return tuple(self._record_from_row(row) for row in rows)
+
+    @staticmethod
+    def _record_from_row(row: tuple[object, ...]) -> OutcomeRecord:
+        return OutcomeRecord(
+            outcome_id=row[0],
+            label=OutcomeLabel(row[1]),
+            target=OutcomeTarget(row[2]),
+            target_id=row[3],
+            policy_stamp=row[4],
+            recorded_at=_parse_timestamp(row[5], field_name="recorded_at"),
+            rationale=row[6],
+            actor_subject_id=row[7],
+            claim_ids=tuple(json.loads(row[8])),
+            observation_ids=tuple(json.loads(row[9])),
+            capture_for_replay=bool(row[10]),
+        )
