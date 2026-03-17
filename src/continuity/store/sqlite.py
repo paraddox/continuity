@@ -640,6 +640,34 @@ class SQLiteRepository:
             for row in rows
         )
 
+    def read_observation(self, observation_id: str) -> Observation | None:
+        row = self._connection.execute(
+            """
+            SELECT
+                observation_id,
+                source_kind,
+                session_id,
+                author_subject_id,
+                content,
+                observed_at,
+                metadata_json
+            FROM observations
+            WHERE observation_id = ?
+            """,
+            (_clean_text(observation_id, field_name="observation_id"),),
+        ).fetchone()
+        if row is None:
+            return None
+        return Observation(
+            observation_id=row["observation_id"],
+            source_kind=row["source_kind"],
+            session_id=row["session_id"],
+            author_subject_id=row["author_subject_id"],
+            content=row["content"],
+            observed_at=_parse_timestamp(row["observed_at"], field_name="observed_at"),
+            metadata=_load_json_object(row["metadata_json"]),
+        )
+
     def save_candidate_memory(self, candidate: CandidateMemory, *, created_at: datetime) -> None:
         created = _validate_timestamp(created_at, field_name="created_at")
         with self._connection:
@@ -698,6 +726,52 @@ class SQLiteRepository:
             scope=ClaimScope(row["scope"]),
             value=json.loads(row["value_json"]),
             source_observation_ids=tuple(_load_json_list(row["source_observation_ids_json"])),
+        )
+
+    def list_candidate_memories(
+        self,
+        *,
+        subject_id: str | None = None,
+        scope: ClaimScope | None = None,
+    ) -> tuple[CandidateMemory, ...]:
+        clauses: list[str] = []
+        parameters: list[str] = []
+        if subject_id is not None:
+            clauses.append("subject_id = ?")
+            parameters.append(_clean_text(subject_id, field_name="subject_id"))
+        if scope is not None:
+            clauses.append("scope = ?")
+            parameters.append(scope.value)
+
+        where = ""
+        if clauses:
+            where = "WHERE " + " AND ".join(clauses)
+
+        rows = self._connection.execute(
+            f"""
+            SELECT
+                candidate_id,
+                claim_type,
+                subject_id,
+                scope,
+                value_json,
+                source_observation_ids_json
+            FROM candidate_memories
+            {where}
+            ORDER BY created_at, candidate_id
+            """,
+            tuple(parameters),
+        ).fetchall()
+        return tuple(
+            CandidateMemory(
+                candidate_id=row["candidate_id"],
+                claim_type=row["claim_type"],
+                subject_id=row["subject_id"],
+                scope=ClaimScope(row["scope"]),
+                value=json.loads(row["value_json"]),
+                source_observation_ids=tuple(_load_json_list(row["source_observation_ids_json"])),
+            )
+            for row in rows
         )
 
     def save_memory_locus(self, locus: MemoryLocus) -> StoredMemoryLocus:
