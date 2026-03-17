@@ -135,7 +135,7 @@ class CodexAdapterTests(unittest.TestCase):
         client = RecordingResponsesClient(
             [
                 FakeResponse(
-                    '{"claims":[{"statement":"Alice prefers black coffee.","evidence_refs":["observation:0"]}]}'
+                    '{"candidates":[{"claim_type":"preference","subject_ref":"observation:0.author","scope":"user","locus_key":"preference/favorite_drink","value":{"drink":"black coffee"},"evidence_refs":["observation:0"]}]}'
                 )
             ]
         )
@@ -147,9 +147,13 @@ class CodexAdapterTests(unittest.TestCase):
             response,
             RawStructuredOutput(
                 payload={
-                    "claims": [
+                    "candidates": [
                         {
-                            "statement": "Alice prefers black coffee.",
+                            "claim_type": "preference",
+                            "subject_ref": "observation:0.author",
+                            "scope": "user",
+                            "locus_key": "preference/favorite_drink",
+                            "value": {"drink": "black coffee"},
                             "evidence_refs": ["observation:0"],
                         }
                     ]
@@ -158,7 +162,8 @@ class CodexAdapterTests(unittest.TestCase):
         )
 
         call = client.calls[-1]
-        self.assertIn("evidence_refs", str(call["instructions"]))
+        self.assertIn("subject_ref", str(call["instructions"]))
+        self.assertIn("locus_key", str(call["instructions"]))
         self.assertEqual(
             call["text"],
             {

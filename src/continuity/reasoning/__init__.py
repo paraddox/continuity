@@ -15,6 +15,14 @@ from .base import (
     publish_authoritative_mutation,
     validate_structured_output,
 )
+from .claim_derivation import (
+    ClaimDerivationCandidate,
+    ClaimDerivationEnvelope,
+    ClaimDerivationEnvelopeSchema,
+    ClaimDerivationPipeline,
+    ClaimDerivationResult,
+    fingerprint_candidate_content,
+)
 from .codex_adapter import (
     CodexAdapter,
     CodexAdapterConfig,
@@ -28,6 +36,11 @@ from .codex_adapter import (
 __all__ = [
     "AnswerQueryRequest",
     "ClaimDerivationRequest",
+    "ClaimDerivationCandidate",
+    "ClaimDerivationEnvelope",
+    "ClaimDerivationEnvelopeSchema",
+    "ClaimDerivationPipeline",
+    "ClaimDerivationResult",
     "CodexAdapter",
     "CodexAdapterConfig",
     "CodexAdapterError",
@@ -43,6 +56,7 @@ __all__ = [
     "StructuredOutputSchema",
     "TextResponse",
     "ValidatedStructuredOutput",
+    "fingerprint_candidate_content",
     "publish_authoritative_mutation",
     "prompt_policy_for",
     "validate_structured_output",

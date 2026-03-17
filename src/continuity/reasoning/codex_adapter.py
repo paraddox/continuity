@@ -148,23 +148,37 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
         schema={
             "type": "object",
             "properties": {
-                "claims": {
+                "candidates": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "statement": {"type": "string"},
+                            "claim_type": {"type": "string"},
+                            "subject_ref": {"type": "string"},
+                            "scope": {"type": "string"},
+                            "locus_key": {"type": "string"},
+                            "value": {
+                                "type": "object",
+                                "additionalProperties": True,
+                            },
                             "evidence_refs": {
                                 "type": "array",
                                 "items": {"type": "string"},
                             },
                         },
-                        "required": ["statement", "evidence_refs"],
+                        "required": [
+                            "claim_type",
+                            "subject_ref",
+                            "scope",
+                            "locus_key",
+                            "value",
+                            "evidence_refs",
+                        ],
                         "additionalProperties": False,
                     },
                 }
             },
-            "required": ["claims"],
+            "required": ["candidates"],
             "additionalProperties": False,
         },
     )
@@ -186,8 +200,10 @@ def prompt_policy_for(policy_pack: PolicyPack) -> CodexPromptPolicy:
         ),
         claim_derivation_instructions=(
             f"You are Continuity's reasoning adapter for policy {policy_stamp}. "
-            "Derive candidate memory claims from the supplied observations. "
-            "Every claim must include evidence_refs using observation labels such as observation:0."
+            "Derive typed candidate memories from the supplied observations. "
+            "Every candidate must include claim_type, subject_ref, scope, locus_key, value, and evidence_refs. "
+            "Use subject_ref values like observation:0.author when the memory is about an observation author. "
+            "Every candidate must include evidence_refs using observation labels such as observation:0."
         ),
         generic_structured_spec=generic_structured_spec,
         claim_derivation_spec=claim_derivation_spec,
