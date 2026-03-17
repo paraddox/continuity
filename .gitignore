@@ -1,6 +1,5 @@
 
-# Dolt database files (added by bd init)
-.dolt/
+# Local database files
 *.db
 
 # Python bytecode

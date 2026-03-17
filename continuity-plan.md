@@ -32,7 +32,7 @@ It should be built as one engine with two deployment modes:
 - `embedded`: the v1 default, running in-process inside Hermes
 - `daemon`: a later local-only wrapper over the same engine and API contracts, without semantic drift
 
-This document is intentionally comprehensive. Sequencing and priority can be tightened later when it is converted into beads epics, but the architecture here should cover the whole intended system.
+This document is intentionally comprehensive. Sequencing and priority can be tightened later during implementation planning, but the architecture here should cover the whole intended system.
 
 The most important architectural rule is that memory must be auditable. Every durable claim, profile item, summary fragment, and dialectic answer should be traceable back to concrete source messages and derivation runs.
 

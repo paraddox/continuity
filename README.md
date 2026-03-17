@@ -116,5 +116,4 @@ uv run --isolated -p 3.11 --with build python -m build
   `build`.
 - `reasoning-openai` installs the optional `openai` SDK used by the live
   adapter path.
-- The repo does not currently have CI, so these commands are run manually in
-  the normal beads workflow.
+- The repo does not currently have CI, so these commands are run manually.
