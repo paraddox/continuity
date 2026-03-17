@@ -41,6 +41,16 @@ python -m pip install -e ".[dev,reasoning-openai]"
 python -m pytest
 ```
 
+If you also want the optional `retrieval-zvec` backend in a dedicated venv, use
+the same script in opt-in mode:
+
+```bash
+INSTALL_ZVEC=1 PYTHON_BIN=python3.12 VENV_DIR=.venv-zvec ./scripts/bootstrap-dev.sh
+```
+
+That installs the normal dev/bootstrap extras plus `retrieval-zvec`, then runs
+the repo test suite and the `continuity.index.zvec_smoke` check.
+
 ## Optional runtime extras
 
 ### OpenAI / Codex adapter
@@ -77,6 +87,12 @@ uv run --isolated -p 3.13 --with pytest python -m pytest tests/test_ollama_embed
 The optional real `retrieval-zvec` backend is documented separately in
 [`docs/retrieval-backend-bootstrap.md`](docs/retrieval-backend-bootstrap.md).
 The short version is:
+
+```bash
+INSTALL_ZVEC=1 PYTHON_BIN=python3.12 VENV_DIR=.venv-zvec ./scripts/bootstrap-dev.sh
+```
+
+If you want the lower-level manual path instead:
 
 ```bash
 python3.12 -m venv .venv-zvec

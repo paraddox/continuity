@@ -5,6 +5,17 @@ In this checkout on 2026-03-17, `python3` is `3.13.7`, so use `python3.12` for t
 
 ## Fresh checkout bootstrap
 
+You can use the repo bootstrap script for the full zvec-capable setup:
+
+```bash
+INSTALL_ZVEC=1 PYTHON_BIN=python3.12 VENV_DIR=.venv-zvec ./scripts/bootstrap-dev.sh
+```
+
+That creates the venv, installs the dev/bootstrap extras plus
+`retrieval-zvec`, runs the repo tests, and then runs the real zvec smoke check.
+
+If you want the lower-level manual path instead, use:
+
 ```bash
 python3.12 -m venv .venv-zvec
 . .venv-zvec/bin/activate

@@ -67,6 +67,8 @@ class PackagingBootstrapTests(unittest.TestCase):
 
         self.assertIn("scripts/bootstrap-dev.sh", readme)
         self.assertIn('python -m pip install -e ".[retrieval-zvec]"', readme)
+        self.assertIn("INSTALL_ZVEC=1", readme)
+        self.assertIn("PYTHON_BIN=python3.12", readme)
         self.assertIn("CONTINUITY_RUN_LIVE_OLLAMA=1", readme)
         self.assertIn("CONTINUITY_RUN_LIVE_OPENAI=1", readme)
 
@@ -77,7 +79,11 @@ class PackagingBootstrapTests(unittest.TestCase):
         script = script_path.read_text()
 
         self.assertIn("python3.11", script)
-        self.assertIn('python -m pip install -e ".[dev,reasoning-openai]"', script)
+        self.assertIn("INSTALL_ZVEC", script)
+        self.assertIn("retrieval-zvec", script)
+        self.assertIn("continuity.index.zvec_smoke", script)
+        self.assertIn('EXTRAS="dev,reasoning-openai"', script)
+        self.assertIn('python -m pip install "${INSTALL_ARGS[@]}"', script)
         self.assertIn("python -m pytest", script)
 
 
