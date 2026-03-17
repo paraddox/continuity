@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
+from typing import TypeVar
 
 from continuity.disclosure import DisclosureContext
 from continuity.forgetting import ForgettingMode, ForgettingTargetKind
@@ -26,6 +27,9 @@ from continuity.transactions import (
 from continuity.views import ViewKind
 
 
+EnumT = TypeVar("EnumT", bound=StrEnum)
+
+
 def _clean_text(value: str, *, field_name: str) -> str:
     cleaned = value.strip()
     if not cleaned:
@@ -43,7 +47,7 @@ def _dedupe_cleaned(values: tuple[str, ...], *, field_name: str) -> tuple[str, .
     return tuple(dict.fromkeys(_clean_text(value, field_name=field_name) for value in values))
 
 
-def _dedupe_enum_tuple[T: StrEnum](values: tuple[T, ...]) -> tuple[T, ...]:
+def _dedupe_enum_tuple(values: tuple[EnumT, ...]) -> tuple[EnumT, ...]:
     return tuple(dict.fromkeys(values))
 
 

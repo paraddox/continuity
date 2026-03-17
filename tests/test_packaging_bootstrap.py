@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import sys
@@ -31,6 +32,21 @@ class PackagingBootstrapTests(unittest.TestCase):
         self.assertEqual(pyproject["tool"]["setuptools"]["package-dir"][""], "src")
         self.assertIn("retrieval-zvec", pyproject["project"]["optional-dependencies"])
         self.assertIn("zvec>=0.2.1b0,<0.3", pyproject["project"]["optional-dependencies"]["retrieval-zvec"])
+
+    def test_source_tree_remains_parseable_by_python_3_11_grammar(self) -> None:
+        syntax_errors: list[str] = []
+
+        for path in sorted((SRC_DIR / "continuity").rglob("*.py")):
+            try:
+                ast.parse(
+                    path.read_text(),
+                    filename=str(path),
+                    feature_version=(3, 11),
+                )
+            except SyntaxError as exc:
+                syntax_errors.append(f"{path.relative_to(ROOT_DIR)}:{exc.lineno}: {exc.msg}")
+
+        self.assertEqual(syntax_errors, [], "\n".join(syntax_errors))
 
     def test_bootstrap_doc_records_safe_zvec_floor_for_non_avx512_hosts(self) -> None:
         bootstrap_doc = (ROOT_DIR / "docs" / "retrieval-backend-bootstrap.md").read_text()
