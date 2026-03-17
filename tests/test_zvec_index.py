@@ -300,6 +300,17 @@ class ZvecIndexTests(unittest.TestCase):
         self.assertEqual(encoded, zvec_index_module._zvec_document_id("vector:claim:claim-1"))
         self.assertNotEqual(encoded, zvec_index_module._zvec_document_id("vector:claim:claim-2"))
 
+    def test_real_backend_filter_uses_single_equals_syntax(self) -> None:
+        filter_expr = zvec_index_module._build_zvec_filter(
+            subject_id="subject:user:alice",
+            source_kinds=(IndexSourceKind.BELIEF_STATE, IndexSourceKind.CLAIM),
+        )
+
+        self.assertEqual(
+            filter_expr,
+            "subject_id = 'subject:user:alice' AND (source_kind = 'belief_state' OR source_kind = 'claim')",
+        )
+
     def test_rebuild_from_sqlite_indexes_all_supported_source_kinds(self) -> None:
         connection = open_memory_database()
         self.addCleanup(connection.close)

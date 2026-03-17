@@ -412,9 +412,9 @@ def _build_zvec_filter(
     clauses: list[str] = []
     if subject_id is not None:
         cleaned_subject_id = _clean_text(subject_id, field_name="subject_id").replace("'", "\\'")
-        clauses.append(f"subject_id == '{cleaned_subject_id}'")
+        clauses.append(f"subject_id = '{cleaned_subject_id}'")
     if source_kinds:
-        source_kind_clauses = " OR ".join(f"source_kind == '{kind.value}'" for kind in source_kinds)
+        source_kind_clauses = " OR ".join(f"source_kind = '{kind.value}'" for kind in source_kinds)
         clauses.append(f"({source_kind_clauses})")
     if not clauses:
         return None
