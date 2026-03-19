@@ -6,6 +6,7 @@ from continuity.hermes_compat.config import (
     HermesMemoryConfig,
 )
 from continuity.hermes_compat.factory import create_continuity_backend
+from continuity.hermes_compat.plugin import create_backend
 from continuity.hermes_compat.manager import (
     ContinuityHermesSession,
     ContinuityHermesSessionManager,
@@ -17,5 +18,6 @@ __all__ = [
     "ContinuityVectorBackendKind",
     "HermesMemoryBackendKind",
     "HermesMemoryConfig",
+    "create_backend",
     "create_continuity_backend",
 ]
