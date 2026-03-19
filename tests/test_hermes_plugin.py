@@ -184,6 +184,56 @@ class HermesPluginTests(unittest.TestCase):
         self.assertIsNone(bundle.manager)
         self.assertIs(bundle.config, config)
 
+    def test_create_backend_reuses_manager_for_same_process_and_config(self) -> None:
+        package, base_module = _fake_hermes_memory_backend_module()
+        managers = [object(), object()]
+        call_count = 0
+
+        def _fake_create_continuity_backend(config=None, **_kwargs):
+            nonlocal call_count
+            manager = managers[call_count]
+            call_count += 1
+            return manager, config
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "hosts": {
+                            "hermes": {
+                                "enabled": True,
+                                "continuity": {
+                                    "storePath": str(Path(tmpdir) / "continuity.db"),
+                                    "vectorBackend": "inmemory",
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.dict(
+                    sys.modules,
+                    {
+                        "memory_backends": package,
+                        "memory_backends.base": base_module,
+                    },
+                ),
+                patch(
+                    "continuity.hermes_compat.plugin.create_continuity_backend",
+                    side_effect=_fake_create_continuity_backend,
+                ),
+            ):
+                plugin = importlib.import_module("continuity.hermes_compat.plugin")
+                first = plugin.create_backend(host="hermes", config_path=str(config_path))
+                second = plugin.create_backend(host="hermes", config_path=str(config_path))
+
+        self.assertIs(first.manager, second.manager)
+        self.assertEqual(call_count, 1)
+
     def test_create_backend_fails_clearly_when_hermes_types_are_unavailable(self) -> None:
         plugin = importlib.import_module("continuity.hermes_compat.plugin")
 

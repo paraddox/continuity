@@ -27,6 +27,7 @@ _CONTINUITY_CAPABILITIES = frozenset(
         "ai_identity",
     }
 )
+_BUNDLE_CACHE: dict[tuple[str, str], object] = {}
 
 
 def _load_hermes_backend_types() -> Any:
@@ -159,6 +160,11 @@ def create_backend(
 
     backend_types = _load_hermes_backend_types()
     resolved_config_path = _resolved_config_path(config_path)
+    cache_key = (host, str(resolved_config_path))
+    cached_bundle = _BUNDLE_CACHE.get(cache_key)
+    if cached_bundle is not None:
+        return cached_bundle
+
     resolved_config = _load_plugin_config(host=host, config_path=resolved_config_path)
     manager, effective_config = create_continuity_backend(config=resolved_config)
 
@@ -169,8 +175,11 @@ def create_backend(
         capabilities=_CONTINUITY_CAPABILITIES,
         config_source=str(resolved_config_path),
     )
-    return backend_types.MemoryBackendBundle(
+    bundle = backend_types.MemoryBackendBundle(
         manager=manager,
         config=effective_config,
         manifest=manifest,
     )
+    if manager is not None:
+        _BUNDLE_CACHE[cache_key] = bundle
+    return bundle
