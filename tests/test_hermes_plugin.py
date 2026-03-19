@@ -198,6 +198,79 @@ class HermesPluginTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Hermes memory backend contract types are unavailable"):
                 plugin.create_backend()
 
+    def test_probe_backend_status_reports_active_elsewhere_for_locked_zvec(self) -> None:
+        plugin = importlib.import_module("continuity.hermes_compat.plugin")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "hosts": {
+                            "hermes": {
+                                "enabled": True,
+                                "continuity": {
+                                    "storePath": str(Path(tmpdir) / "continuity.db"),
+                                    "vectorBackend": "zvec",
+                                    "collectionPath": str(Path(tmpdir) / "continuity-zvec"),
+                                    "embeddingDimensions": 768,
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch("continuity.hermes_compat.plugin._zvec_lock_state", return_value="locked"):
+                status = plugin.probe_backend_status(host="hermes", config_path=config_path)
+
+        self.assertEqual(status["backend_id"], "continuity")
+        self.assertEqual(status["display_name"], "Continuity")
+        self.assertEqual(status["status"], "active_elsewhere")
+        self.assertIn("vector store lock is held", status["detail"])
+        self.assertEqual(
+            status["capabilities"],
+            frozenset(
+                {
+                    "profile",
+                    "search",
+                    "answer",
+                    "conclude",
+                    "prefetch",
+                    "migrate",
+                    "ai_identity",
+                }
+            ),
+        )
+
+    def test_probe_backend_status_reports_disabled_config(self) -> None:
+        plugin = importlib.import_module("continuity.hermes_compat.plugin")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "hosts": {
+                            "hermes": {
+                                "enabled": False,
+                                "continuity": {
+                                    "storePath": str(Path(tmpdir) / "continuity.db"),
+                                    "vectorBackend": "inmemory",
+                                },
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            status = plugin.probe_backend_status(host="hermes", config_path=config_path)
+
+        self.assertEqual(status["status"], "disabled")
+        self.assertEqual(status["backend_id"], "continuity")
+
 
 if __name__ == "__main__":
     unittest.main()

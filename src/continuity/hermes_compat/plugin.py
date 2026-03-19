@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import fcntl
 import importlib
 import json
 from collections.abc import Mapping
@@ -92,6 +94,60 @@ def _load_plugin_config(*, host: str, config_path: Path) -> HermesMemoryConfig:
         _force_continuity_backend(raw, host=host),
         host=host,
     )
+
+
+def _zvec_lock_state(collection_path: Path) -> str:
+    lock_path = collection_path.expanduser() / "LOCK"
+    if not lock_path.exists():
+        return "missing"
+
+    with lock_path.open("r+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                return "locked"
+            raise
+        else:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            return "available"
+
+
+def probe_backend_status(
+    *,
+    host: str = "hermes",
+    config_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Return lightweight Continuity backend status without opening the runtime."""
+
+    resolved_config_path = _resolved_config_path(config_path)
+    config = _load_plugin_config(host=host, config_path=resolved_config_path)
+    detail = ""
+    status = "configured"
+
+    if not config.enabled:
+        status = "disabled"
+    elif config.continuity_vector_backend.name.lower() == "zvec":
+        lock_state = _zvec_lock_state(config.continuity_collection_path)
+        if lock_state == "locked":
+            status = "active_elsewhere"
+            detail = f"vector store lock is held at {config.continuity_collection_path / 'LOCK'}"
+        elif lock_state == "missing":
+            detail = "vector store has not been initialized yet"
+        else:
+            detail = "vector store is available"
+    else:
+        detail = "in-memory vector backend configured"
+
+    return {
+        "backend_id": "continuity",
+        "display_name": "Continuity",
+        "capabilities": _CONTINUITY_CAPABILITIES,
+        "status": status,
+        "detail": detail,
+        "config": config,
+        "config_source": str(resolved_config_path),
+    }
 
 
 def create_backend(
