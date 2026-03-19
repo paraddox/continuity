@@ -86,6 +86,13 @@ class PackagingBootstrapTests(unittest.TestCase):
         self.assertIn('python -m pip install "${INSTALL_ARGS[@]}"', script)
         self.assertIn("python -m pytest", script)
 
+    def test_readme_documents_hermes_plugin_install_script(self) -> None:
+        readme = (ROOT_DIR / "README.md").read_text()
+
+        self.assertIn("install-hermes-plugin.sh", readme)
+        self.assertIn("~/.hermes/hermes-agent", readme)
+        self.assertIn("memory_backend_factory", readme)
+
 
 class ZvecSmokeModuleTests(unittest.TestCase):
     def test_package_init_keeps_smoke_module_lazy_for_python_m_execution(self) -> None:

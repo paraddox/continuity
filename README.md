@@ -51,6 +51,37 @@ INSTALL_ZVEC=1 PYTHON_BIN=python3.12 VENV_DIR=.venv-zvec ./scripts/bootstrap-dev
 That installs the normal dev/bootstrap extras plus `retrieval-zvec`, then runs
 the repo test suite and the `continuity.index.zvec_smoke` check.
 
+## Hermes plugin install
+
+To install Continuity into a Hermes checkout and wire Hermes to the external
+memory backend hook, use:
+
+```bash
+./scripts/install-hermes-plugin.sh
+```
+
+By default that targets `~/.hermes/hermes-agent`. You can pass a different
+Hermes install folder as the first argument:
+
+```bash
+./scripts/install-hermes-plugin.sh /path/to/hermes-agent
+```
+
+The script:
+
+- installs Continuity into the target Hermes venv
+- configures `hosts.hermes.experimental.memory_backend_factory`
+- writes the host `continuity` block into `~/.honcho/config.json`
+
+Optional controls:
+
+```bash
+SKIP_PIP_INSTALL=1 RESTART_GATEWAY=0 ./scripts/install-hermes-plugin.sh
+```
+
+`RESTART_GATEWAY=1` asks the script to restart the Hermes gateway after the
+config update.
+
 ## Optional runtime extras
 
 ### OpenAI / Codex adapter
