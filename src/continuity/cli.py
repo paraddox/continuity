@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from continuity.hermes_compat.config import HermesMemoryConfig
+from continuity.reasoning.logging import latest_reasoning_event, list_reasoning_events
 
 
 COUNT_TABLES = (
@@ -23,6 +24,7 @@ COUNT_TABLES = (
     "compiled_views",
     "resolution_queue_items",
     "compiled_utility_weights",
+    "reasoning_events",
 )
 
 
@@ -41,6 +43,10 @@ def _parser() -> argparse.ArgumentParser:
     claims = subparsers.add_parser("claims", help="Show recent claims.")
     claims.add_argument("--limit", type=int, default=20, help="Maximum number of claims to show.")
     claims.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+
+    reasoning = subparsers.add_parser("reasoning", help="Show recent reasoning provider events from the last 24 hours.")
+    reasoning.add_argument("--limit", type=int, default=20, help="Maximum number of reasoning events to show.")
+    reasoning.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
 
     return parser
 
@@ -129,15 +135,38 @@ def _print_json(payload: dict[str, Any]) -> int:
     return 0
 
 
+def _backend_label(config: HermesMemoryConfig) -> str:
+    raw = config.raw
+    hosts = raw.get("hosts")
+    host_block = hosts.get(config.host) if isinstance(hosts, dict) else None
+    experimental = host_block.get("experimental") if isinstance(host_block, dict) else None
+    factory = experimental.get("memory_backend_factory") if isinstance(experimental, dict) else None
+    if str(factory or "").strip() == "continuity.hermes_compat.plugin:create_backend":
+        return "continuity"
+    return config.backend.value
+
+
 def _status_command(*, config: HermesMemoryConfig, store_path: Path, as_json: bool) -> int:
     connection = _connect(store_path)
     try:
+        target = config.continuity_reasoning_target
         payload = {
-            "backend": config.backend.value,
+            "backend": _backend_label(config),
             "store_path": str(store_path),
             "store_exists": store_path.exists(),
             "vector_backend": config.continuity_vector_backend.value,
             "collection_path": str(config.continuity_collection_path),
+            "reasoning_target": (
+                {
+                    "target_name": target.target_name,
+                    "provider": target.provider,
+                    "model": target.model,
+                    "reasoning_effort": target.reasoning_effort,
+                }
+                if target.is_configured
+                else None
+            ),
+            "latest_reasoning": latest_reasoning_event(connection),
             "counts": _counts(connection),
         }
         if as_json:
@@ -147,6 +176,13 @@ def _status_command(*, config: HermesMemoryConfig, store_path: Path, as_json: bo
         print(f"Exists:  {'yes' if payload['store_exists'] else 'no'}")
         print(f"Vector:  {payload['vector_backend']}")
         print(f"Index:   {payload['collection_path']}")
+        if payload["latest_reasoning"] is not None:
+            latest = payload["latest_reasoning"]
+            print(
+                f"Latest reasoning: {latest['recorded_at']}  "
+                f"{latest['provider'] or '-'}  {latest['model'] or '-'}  "
+                f"{latest['operation']}  {'ok' if latest['success'] else 'error'}"
+            )
         print("")
         print("Counts:")
         for table, count in payload["counts"].items():
@@ -197,6 +233,26 @@ def _claims_command(*, store_path: Path, limit: int, as_json: bool) -> int:
             connection.close()
 
 
+def _reasoning_command(*, store_path: Path, limit: int, as_json: bool) -> int:
+    connection = _connect(store_path)
+    try:
+        reasoning = list_reasoning_events(connection, limit=limit)
+        if as_json:
+            return _print_json({"store_path": str(store_path), "reasoning": reasoning})
+        if not reasoning:
+            print("No reasoning events found.")
+            return 0
+        for event in reasoning:
+            print(
+                f"{event['recorded_at']}  {event['provider'] or '-'}  {event['model'] or '-'}  "
+                f"{event['operation']}  {'ok' if event['success'] else 'error'}  {event['latency_ms']}ms"
+            )
+        return 0
+    finally:
+        if connection is not None:
+            connection.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
@@ -209,6 +265,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _sessions_command(store_path=store_path, limit=args.limit, as_json=args.json)
     if command == "claims":
         return _claims_command(store_path=store_path, limit=args.limit, as_json=args.json)
+    if command == "reasoning":
+        return _reasoning_command(store_path=store_path, limit=args.limit, as_json=args.json)
 
     parser.error(f"unknown command: {command}")
     return 2

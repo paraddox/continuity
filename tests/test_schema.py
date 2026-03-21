@@ -107,6 +107,7 @@ class SchemaMigrationTests(unittest.TestCase):
                 "tier_assignments",
                 "tier_transitions",
                 "prefetch_state",
+                "reasoning_events",
             }.issubset(table_names(connection))
         )
 

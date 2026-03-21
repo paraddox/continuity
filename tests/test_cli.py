@@ -30,6 +30,7 @@ from continuity.admission import (
 )
 from continuity.ontology import MemoryPartition
 from continuity.hermes_compat.config import HermesMemoryBackendKind, HermesMemoryConfig
+from continuity.config import ContinuityConfig
 from continuity.store.claims import (
     AdmissionDecision,
     AdmissionOutcome,
@@ -190,6 +191,76 @@ def seed_cli_state(path: Path) -> None:
     connection.close()
 
 
+def seed_reasoning_events(path: Path) -> None:
+    connection = open_memory_database(path)
+    recent = datetime.now(timezone.utc)
+    stale = recent - timedelta(days=2)
+    connection.execute(
+        """
+        INSERT INTO reasoning_events(
+            event_id,
+            recorded_at,
+            operation,
+            adapter,
+            provider,
+            model,
+            target_name,
+            base_url,
+            success,
+            latency_ms,
+            error_text
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                "reasoning-1",
+                recent.isoformat(),
+                "answer_query",
+                "HermesChatAdapter",
+                "zai",
+            "glm-5-turbo",
+            "GLM 5 Turbo",
+            "https://api.z.ai/api/coding/paas/v4",
+            1,
+            321,
+            None,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO reasoning_events(
+            event_id,
+            recorded_at,
+            operation,
+            adapter,
+            provider,
+            model,
+            target_name,
+            base_url,
+            success,
+            latency_ms,
+            error_text
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                "reasoning-old",
+                stale.isoformat(),
+                "derive_claims",
+            "HermesChatAdapter",
+            "zai",
+            "glm-5-turbo",
+            "GLM 5 Turbo",
+            "https://api.z.ai/api/coding/paas/v4",
+            0,
+            999,
+            "old failure",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+
 class ContinuityCliTests(unittest.TestCase):
     def build_config(self, db_path: Path) -> HermesMemoryConfig:
         return HermesMemoryConfig(
@@ -212,6 +283,7 @@ class ContinuityCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             db_path = Path(td) / "continuity.db"
             seed_cli_state(db_path)
+            seed_reasoning_events(db_path)
 
             output = self.run_cli(["status", "--json"], config=self.build_config(db_path))
             payload = json.loads(output)
@@ -222,6 +294,8 @@ class ContinuityCliTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["sessions"], 1)
         self.assertEqual(payload["counts"]["claims"], 1)
         self.assertEqual(payload["counts"]["observations"], 1)
+        self.assertEqual(payload["latest_reasoning"]["provider"], "zai")
+        self.assertEqual(payload["latest_reasoning"]["model"], "glm-5-turbo")
 
     def test_sessions_json_lists_recent_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -255,6 +329,48 @@ class ContinuityCliTests(unittest.TestCase):
         self.assertFalse(payload["store_exists"])
         self.assertEqual(payload["counts"]["sessions"], 0)
         self.assertEqual(payload["counts"]["claims"], 0)
+
+    def test_status_json_reports_continuity_backend_for_external_plugin_config(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "continuity.db"
+            config = HermesMemoryConfig(
+                backend=HermesMemoryBackendKind.HONCHO,
+                enabled=True,
+                continuity_store_path=db_path,
+                continuity=ContinuityConfig(
+                    raw={
+                        "hosts": {
+                            "hermes": {
+                                "experimental": {
+                                    "memory_backend_factory": "continuity.hermes_compat.plugin:create_backend"
+                                }
+                            }
+                        }
+                    }
+                ),
+            )
+
+            output = self.run_cli(["status", "--json"], config=config)
+            payload = json.loads(output)
+
+        self.assertEqual(payload["backend"], "continuity")
+
+    def test_reasoning_json_lists_recent_events_and_prunes_old_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "continuity.db"
+            seed_reasoning_events(db_path)
+
+            output = self.run_cli(["reasoning", "--json"], config=self.build_config(db_path))
+            payload = json.loads(output)
+
+            connection = sqlite3.connect(db_path)
+            count = connection.execute("SELECT COUNT(*) FROM reasoning_events").fetchone()[0]
+            connection.close()
+
+        self.assertEqual(count, 1)
+        self.assertEqual(len(payload["reasoning"]), 1)
+        self.assertEqual(payload["reasoning"][0]["provider"], "zai")
+        self.assertEqual(payload["reasoning"][0]["model"], "glm-5-turbo")
 
 
 if __name__ == "__main__":

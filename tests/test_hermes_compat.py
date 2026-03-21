@@ -23,6 +23,7 @@ from continuity.hermes_compat.manager import ContinuityHermesSessionManager
 from continuity.index.zvec_index import InMemoryZvecBackend
 from continuity.reasoning.codex_adapter import CodexAdapter
 from continuity.reasoning.hermes_chat_adapter import HermesChatAdapter
+from continuity.reasoning.logging import LoggingReasoningAdapter, ReasoningRuntimeMetadata
 from continuity.reasoning.base import AnswerQueryRequest, ClaimDerivationRequest, RawStructuredOutput, TextResponse
 
 
@@ -231,9 +232,10 @@ class HermesMemoryConfigTests(unittest.TestCase):
         ):
             manager, _ = create_continuity_backend(config)
 
-        self.assertIsInstance(captured["reasoning_adapter"], CodexAdapter)
-        self.assertIs(captured["reasoning_adapter"]._client, fake_client)
-        self.assertEqual(captured["reasoning_adapter"].config.model, "gpt-5.3-codex")
+        self.assertIsInstance(captured["reasoning_adapter"], LoggingReasoningAdapter)
+        self.assertIsInstance(captured["reasoning_adapter"].delegate, CodexAdapter)
+        self.assertIs(captured["reasoning_adapter"].delegate._client, fake_client)
+        self.assertEqual(captured["reasoning_adapter"].delegate.config.model, "gpt-5.3-codex")
         self.assertIsInstance(manager, FakeManager)
 
     def test_factory_requires_explicit_reasoning_target_when_no_adapter_injected(self) -> None:
@@ -263,13 +265,17 @@ class HermesMemoryConfigTests(unittest.TestCase):
         with (
             patch(
                 "continuity.hermes_compat.factory._resolve_hermes_reasoning_adapter",
-                return_value=fake_adapter,
+                return_value=(
+                    fake_adapter,
+                    ReasoningRuntimeMetadata(adapter="FakeReasoningAdapter"),
+                ),
             ),
             patch("continuity.hermes_compat.factory.ContinuityHermesSessionManager", FakeManager),
         ):
             manager, _ = create_continuity_backend(config)
 
-        self.assertIs(captured["reasoning_adapter"], fake_adapter)
+        self.assertIsInstance(captured["reasoning_adapter"], LoggingReasoningAdapter)
+        self.assertIs(captured["reasoning_adapter"].delegate, fake_adapter)
         self.assertIsInstance(manager, FakeManager)
 
     def test_factory_resolves_named_hermes_custom_provider_target(self) -> None:
@@ -319,8 +325,9 @@ class HermesMemoryConfigTests(unittest.TestCase):
         ):
             manager, _ = create_continuity_backend(config)
 
-        self.assertIsInstance(captured["reasoning_adapter"], HermesChatAdapter)
-        self.assertEqual(captured["reasoning_adapter"].config.model, "glm-5-turbo")
+        self.assertIsInstance(captured["reasoning_adapter"], LoggingReasoningAdapter)
+        self.assertIsInstance(captured["reasoning_adapter"].delegate, HermesChatAdapter)
+        self.assertEqual(captured["reasoning_adapter"].delegate.config.model, "glm-5-turbo")
         self.assertIsInstance(manager, FakeManager)
 
     def test_factory_resolves_explicit_provider_and_model_target(self) -> None:
@@ -354,8 +361,9 @@ class HermesMemoryConfigTests(unittest.TestCase):
         ):
             manager, _ = create_continuity_backend(config)
 
-        self.assertIsInstance(captured["reasoning_adapter"], HermesChatAdapter)
-        self.assertEqual(captured["reasoning_adapter"].config.model, "glm-5-turbo")
+        self.assertIsInstance(captured["reasoning_adapter"], LoggingReasoningAdapter)
+        self.assertIsInstance(captured["reasoning_adapter"].delegate, HermesChatAdapter)
+        self.assertEqual(captured["reasoning_adapter"].delegate.config.model, "glm-5-turbo")
         self.assertIsInstance(manager, FakeManager)
 
     def test_factory_returns_none_for_non_continuity_backend(self) -> None:

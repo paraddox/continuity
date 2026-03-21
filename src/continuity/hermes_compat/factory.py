@@ -17,6 +17,7 @@ from continuity.index.zvec_index import InMemoryZvecBackend, ZvecBackend
 from continuity.reasoning.base import ReasoningAdapter
 from continuity.reasoning.codex_adapter import CodexAdapter, CodexAdapterConfig, ResponsesClient
 from continuity.reasoning.hermes_chat_adapter import HermesChatAdapter, HermesChatAdapterConfig
+from continuity.reasoning.logging import LoggingReasoningAdapter, ReasoningRuntimeMetadata
 
 
 class _HermesCodexResponsesClient:
@@ -104,10 +105,10 @@ def _try_hermes_codex_runtime() -> tuple[ResponsesClient | None, str | None]:
 
 def _resolve_hermes_reasoning_adapter(
     config: HermesMemoryConfig,
-) -> ReasoningAdapter | None:
+) -> tuple[ReasoningAdapter | None, ReasoningRuntimeMetadata | None]:
     target = config.continuity_reasoning_target
     if not target.is_configured:
-        return None
+        return None, None
 
     hermes_config = _load_hermes_config()
     provider = target.provider
@@ -140,11 +141,20 @@ def _resolve_hermes_reasoning_adapter(
 
     if resolved_provider == "openai-codex":
         codex_client, _ = _try_hermes_codex_runtime()
-        return CodexAdapter(
-            client=codex_client,
-            config=CodexAdapterConfig(
+        return (
+            CodexAdapter(
+                client=codex_client,
+                config=CodexAdapterConfig(
+                    model=resolved_model,
+                    reasoning_effort=resolved_effort,  # type: ignore[arg-type]
+                ),
+            ),
+            ReasoningRuntimeMetadata(
+                adapter="CodexAdapter",
+                provider="openai-codex",
                 model=resolved_model,
-                reasoning_effort=resolved_effort,  # type: ignore[arg-type]
+                target_name=target.target_name,
+                base_url=None,
             ),
         )
 
@@ -160,11 +170,20 @@ def _resolve_hermes_reasoning_adapter(
             f"Unable to resolve Hermes reasoning target provider={resolved_provider!r} model={resolved_model!r}"
         )
 
-    return HermesChatAdapter(
-        client=client,
-        config=HermesChatAdapterConfig(
+    return (
+        HermesChatAdapter(
+            client=client,
+            config=HermesChatAdapterConfig(
+                model=final_model,
+                reasoning_effort=resolved_effort,
+            ),
+        ),
+        ReasoningRuntimeMetadata(
+            adapter="HermesChatAdapter",
+            provider=resolved_provider,
             model=final_model,
-            reasoning_effort=resolved_effort,
+            target_name=target.target_name,
+            base_url=_clean_optional_text(getattr(client, "base_url", None)) or base_url,
         ),
     )
 
@@ -217,11 +236,21 @@ def create_continuity_backend(
     if not resolved_config.enabled:
         return None, resolved_config
 
-    adapter = reasoning_adapter or _resolve_hermes_reasoning_adapter(resolved_config)
+    adapter_metadata: ReasoningRuntimeMetadata | None = None
+    if reasoning_adapter is not None:
+        adapter = reasoning_adapter
+        adapter_metadata = ReasoningRuntimeMetadata(adapter=adapter.__class__.__name__)
+    else:
+        adapter, adapter_metadata = _resolve_hermes_reasoning_adapter(resolved_config)
     if adapter is None:
         raise ValueError(
             "Continuity reasoning target must be configured when no reasoning adapter is injected"
         )
+    logged_adapter = LoggingReasoningAdapter(
+        delegate=adapter,
+        store_path=resolved_config.continuity_store_path,
+        metadata=adapter_metadata or ReasoningRuntimeMetadata(adapter=adapter.__class__.__name__),
+    )
     embedding_client = OllamaEmbeddingClient(
         config=OllamaEmbeddingConfig(
             model=resolved_config.continuity_embedding_model,
@@ -243,7 +272,7 @@ def create_continuity_backend(
 
     manager = ContinuityHermesSessionManager(
         config=resolved_config,
-        reasoning_adapter=adapter,
+        reasoning_adapter=logged_adapter,
         embedding_client=embedding_client,
         vector_backend=vector_backend,
     )

@@ -48,7 +48,7 @@ from continuity.utility import UtilitySignal
 from continuity.views import ViewKind
 
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,6 +738,31 @@ MIGRATIONS: tuple[Migration, ...] = (
             """
             ALTER TABLE replay_artifacts
             ADD COLUMN decision_payload_json TEXT NOT NULL DEFAULT '{}'
+            """.strip(),
+        ),
+    ),
+    Migration(
+        version=5,
+        name="add_reasoning_event_log",
+        statements=(
+            """
+            CREATE TABLE reasoning_events (
+                event_id TEXT PRIMARY KEY,
+                recorded_at TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                adapter TEXT NOT NULL,
+                provider TEXT,
+                model TEXT,
+                target_name TEXT,
+                base_url TEXT,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                latency_ms INTEGER NOT NULL CHECK (latency_ms >= 0),
+                error_text TEXT
+            )
+            """.strip(),
+            """
+            CREATE INDEX idx_reasoning_events_recorded_at
+            ON reasoning_events(recorded_at DESC)
             """.strip(),
         ),
     ),

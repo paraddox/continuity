@@ -341,6 +341,9 @@ class ContinuityHermesSessionManager:
         if self._async_queue is not None and self._async_thread is not None:
             self._async_queue.put(_ASYNC_SHUTDOWN)
             self._async_thread.join(timeout=10)
+        close_fn = getattr(self._builder._reasoning_adapter, "close", None)
+        if callable(close_fn):
+            close_fn()
         if self._owns_connection:
             self._connection.close()
 
