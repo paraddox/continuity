@@ -219,13 +219,8 @@ def create_continuity_backend(
 
     adapter = reasoning_adapter or _resolve_hermes_reasoning_adapter(resolved_config)
     if adapter is None:
-        codex_client, hermes_model = _try_hermes_codex_runtime()
-        adapter = CodexAdapter(
-            client=codex_client,
-            config=CodexAdapterConfig(
-                model=hermes_model or resolved_config.continuity_reasoning_model,
-                reasoning_effort=resolved_config.continuity_reasoning_effort,  # type: ignore[arg-type]
-            )
+        raise ValueError(
+            "Continuity reasoning target must be configured when no reasoning adapter is injected"
         )
     embedding_client = OllamaEmbeddingClient(
         config=OllamaEmbeddingConfig(

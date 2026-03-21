@@ -202,8 +202,19 @@ class HermesMemoryConfigTests(unittest.TestCase):
         self.assertEqual(terminal.output_text, "ok")
         self.assertEqual(model, "gpt-5.3-codex")
 
-    def test_factory_prefers_hermes_codex_runtime_when_available(self) -> None:
-        config = HermesMemoryConfig.from_mapping({"backend": "continuity"})
+    def test_factory_resolves_explicit_openai_codex_target_when_available(self) -> None:
+        config = HermesMemoryConfig.from_mapping(
+            {
+                "backend": "continuity",
+                "continuity": {
+                    "reasoningTarget": {
+                        "provider": "openai-codex",
+                        "model": "gpt-5.3-codex",
+                        "reasoningEffort": "low",
+                    }
+                },
+            }
+        )
         fake_client = object()
         captured: dict[str, object] = {}
 
@@ -224,6 +235,12 @@ class HermesMemoryConfigTests(unittest.TestCase):
         self.assertIs(captured["reasoning_adapter"]._client, fake_client)
         self.assertEqual(captured["reasoning_adapter"].config.model, "gpt-5.3-codex")
         self.assertIsInstance(manager, FakeManager)
+
+    def test_factory_requires_explicit_reasoning_target_when_no_adapter_injected(self) -> None:
+        config = HermesMemoryConfig.from_mapping({"backend": "continuity"})
+
+        with self.assertRaisesRegex(ValueError, "Continuity reasoning target must be configured"):
+            create_continuity_backend(config)
 
     def test_factory_prefers_independent_hermes_reasoning_target_when_configured(self) -> None:
         config = HermesMemoryConfig.from_mapping(
