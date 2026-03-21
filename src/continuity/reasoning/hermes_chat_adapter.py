@@ -112,7 +112,7 @@ class HermesChatAdapter:
     def derive_claims(self, request: ClaimDerivationRequest) -> RawStructuredOutput:
         response = self._create_structured_response(
             system_instructions=self.prompt_policy.claim_derivation_instructions,
-            user_messages=self._messages_to_input(request.observations),
+            user_messages=self._claim_derivation_messages(request.observations),
             spec=self.prompt_policy.claim_derivation_spec,
         )
         return RawStructuredOutput(
@@ -125,6 +125,17 @@ class HermesChatAdapter:
     @staticmethod
     def _messages_to_input(messages: Sequence[ReasoningMessage]) -> list[dict[str, str]]:
         return [{"role": message.role, "content": message.content} for message in messages]
+
+    @staticmethod
+    def _claim_derivation_messages(
+        observations: Sequence[ReasoningMessage],
+    ) -> list[dict[str, str]]:
+        transcript_lines = ["Observations:"]
+        for index, observation in enumerate(observations):
+            transcript_lines.append(
+                f"observation:{index} role={observation.role} content={observation.content}"
+            )
+        return [{"role": "user", "content": "\n".join(transcript_lines)}]
 
     def _messages_with_tail(
         self,

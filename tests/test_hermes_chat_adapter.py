@@ -171,6 +171,23 @@ class HermesChatAdapterTests(unittest.TestCase):
         )
         call = completions.calls[-1]
         self.assertEqual(call["response_format"]["json_schema"]["name"], "claims_hermes_v1_v1")
+        self.assertEqual(
+            call["messages"],
+            [
+                {
+                    "role": "system",
+                    "content": prompt_policy_for(hermes_v1_policy_pack()).claim_derivation_instructions,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Observations:\n"
+                        "observation:0 role=user content=Alice prefers black coffee.\n"
+                        "observation:1 role=assistant content=Stored."
+                    ),
+                },
+            ],
+        )
 
     def test_structured_generation_retries_without_schema_when_endpoint_rejects_response_format(self) -> None:
         completions = _FailingOnceCompletions(
