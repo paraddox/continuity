@@ -96,6 +96,24 @@ CONTINUITY_REASONING_TARGET_EFFORT="low" \
 That leaves Hermes's main chat model unchanged while giving Continuity its own
 reasoning target through Hermes's provider layer.
 
+The installer also supports two higher-level selection modes:
+
+```bash
+# Reuse Hermes's current active model/provider as Continuity's target
+CONTINUITY_REASONING_SELECTION=active-model ./scripts/install-hermes-plugin.sh
+
+# Create a new Hermes custom provider for Continuity and point to it by name
+CONTINUITY_REASONING_SELECTION=create-custom-provider \
+CONTINUITY_CREATE_PROVIDER_NAME="GLM 5 Turbo" \
+CONTINUITY_CREATE_PROVIDER_BASE_URL="https://api.z.ai/api/coding/paas/v4" \
+CONTINUITY_CREATE_PROVIDER_API_KEY="..." \
+CONTINUITY_CREATE_PROVIDER_MODEL="glm-5-turbo" \
+./scripts/install-hermes-plugin.sh
+```
+
+When run interactively in a terminal, the script can prompt you for these
+choices instead of requiring the env vars up front.
+
 ## Optional runtime extras
 
 ### OpenAI / Codex adapter

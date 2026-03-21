@@ -92,6 +92,8 @@ class PackagingBootstrapTests(unittest.TestCase):
         self.assertIn("install-hermes-plugin.sh", readme)
         self.assertIn("~/.hermes/hermes-agent", readme)
         self.assertIn("memory_backend_factory", readme)
+        self.assertIn("CONTINUITY_REASONING_SELECTION=active-model", readme)
+        self.assertIn("CONTINUITY_CREATE_PROVIDER_MODEL", readme)
 
 
 class ZvecSmokeModuleTests(unittest.TestCase):
