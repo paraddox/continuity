@@ -51,6 +51,48 @@ class ContinuityVectorBackendKind(StrEnum):
     ZVEC = "zvec"
 
 
+@dataclass(frozen=True, slots=True)
+class ContinuityReasoningTarget:
+    target_name: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    reasoning_effort: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "target_name",
+            _optional_clean_text(self.target_name, field_name="target_name"),
+        )
+        object.__setattr__(
+            self,
+            "provider",
+            _optional_clean_text(self.provider, field_name="provider"),
+        )
+        object.__setattr__(
+            self,
+            "model",
+            _optional_clean_text(self.model, field_name="model"),
+        )
+        object.__setattr__(
+            self,
+            "reasoning_effort",
+            _optional_clean_text(self.reasoning_effort, field_name="reasoning_effort"),
+        )
+
+    @property
+    def is_configured(self) -> bool:
+        return any(
+            value is not None
+            for value in (
+                self.target_name,
+                self.provider,
+                self.model,
+                self.reasoning_effort,
+            )
+        )
+
+
 def _normalize_backend(value: object) -> HermesMemoryBackendKind:
     cleaned = str(value or HermesMemoryBackendKind.HONCHO.value).strip().lower()
     if cleaned == HermesMemoryBackendKind.CONTINUITY.value:
@@ -100,6 +142,9 @@ class HermesMemoryConfig:
     continuity_embedding_dimensions: int | None = None
     continuity_reasoning_model: str = "gpt-5.4"
     continuity_reasoning_effort: str = "low"
+    continuity_reasoning_target: ContinuityReasoningTarget = field(
+        default_factory=ContinuityReasoningTarget
+    )
     continuity_policy_name: str = "hermes_v1"
     continuity: ContinuityConfig = field(default_factory=ContinuityConfig)
 
@@ -279,6 +324,12 @@ class HermesMemoryConfig:
                 "CONTINUITY_REASONING_EFFORT",
                 "low",
             ),
+            continuity_reasoning_target=ContinuityReasoningTarget(
+                target_name=os.environ.get("CONTINUITY_REASONING_TARGET_NAME"),
+                provider=os.environ.get("CONTINUITY_REASONING_PROVIDER"),
+                model=os.environ.get("CONTINUITY_REASONING_TARGET_MODEL"),
+                reasoning_effort=os.environ.get("CONTINUITY_REASONING_TARGET_EFFORT"),
+            ),
             continuity=continuity,
         )
 
@@ -294,6 +345,8 @@ class HermesMemoryConfig:
         host_block = _mapping(hosts.get(host))
         continuity_block = _mapping(raw.get("continuity"))
         host_continuity = _mapping(host_block.get("continuity"))
+        host_reasoning_target = _mapping(host_continuity.get("reasoningTarget"))
+        root_reasoning_target = _mapping(continuity_block.get("reasoningTarget"))
 
         backend = _normalize_backend(host_block.get("backend") or raw.get("backend"))
         api_key = _optional_clean_text(
@@ -376,6 +429,24 @@ class HermesMemoryConfig:
                 or continuity_block.get("reasoningEffort")
                 or "low"
             ),
+            continuity_reasoning_target=ContinuityReasoningTarget(
+                target_name=(
+                    host_reasoning_target.get("targetName")
+                    or root_reasoning_target.get("targetName")
+                ),
+                provider=(
+                    host_reasoning_target.get("provider")
+                    or root_reasoning_target.get("provider")
+                ),
+                model=(
+                    host_reasoning_target.get("model")
+                    or root_reasoning_target.get("model")
+                ),
+                reasoning_effort=(
+                    host_reasoning_target.get("reasoningEffort")
+                    or root_reasoning_target.get("reasoningEffort")
+                ),
+            ),
             continuity_policy_name=str(
                 host_continuity.get("policyName")
                 or continuity_block.get("policyName")
@@ -424,6 +495,7 @@ class HermesMemoryConfig:
             continuity_embedding_dimensions=config.continuity_embedding_dimensions,
             continuity_reasoning_model=config.continuity_reasoning_model,
             continuity_reasoning_effort=config.continuity_reasoning_effort,
+            continuity_reasoning_target=config.continuity_reasoning_target,
             continuity_policy_name=config.continuity_policy_name,
             continuity=config.continuity,
         )

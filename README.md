@@ -82,6 +82,20 @@ SKIP_PIP_INSTALL=1 RESTART_GATEWAY=0 ./scripts/install-hermes-plugin.sh
 `RESTART_GATEWAY=1` asks the script to restart the Hermes gateway after the
 config update.
 
+To point Continuity at an independent Hermes-backed reasoning target during
+install, pass one of the `CONTINUITY_REASONING_TARGET_*` env vars. Example:
+
+```bash
+CONTINUITY_REASONING_TARGET_NAME="GLM 5 Turbo" \
+CONTINUITY_REASONING_PROVIDER="zai" \
+CONTINUITY_REASONING_TARGET_MODEL="glm-5-turbo" \
+CONTINUITY_REASONING_TARGET_EFFORT="low" \
+./scripts/install-hermes-plugin.sh
+```
+
+That leaves Hermes's main chat model unchanged while giving Continuity its own
+reasoning target through Hermes's provider layer.
+
 ## Optional runtime extras
 
 ### OpenAI / Codex adapter

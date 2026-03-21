@@ -20,6 +20,10 @@ CONTINUITY_EMBEDDING_MODEL="${CONTINUITY_EMBEDDING_MODEL:-nomic-embed-text}"
 CONTINUITY_EMBEDDING_BASE_URL="${CONTINUITY_EMBEDDING_BASE_URL:-http://127.0.0.1:11434}"
 CONTINUITY_REASONING_MODEL="${CONTINUITY_REASONING_MODEL:-gpt-5.4}"
 CONTINUITY_REASONING_EFFORT="${CONTINUITY_REASONING_EFFORT:-low}"
+CONTINUITY_REASONING_TARGET_NAME="${CONTINUITY_REASONING_TARGET_NAME:-}"
+CONTINUITY_REASONING_PROVIDER="${CONTINUITY_REASONING_PROVIDER:-}"
+CONTINUITY_REASONING_TARGET_MODEL="${CONTINUITY_REASONING_TARGET_MODEL:-}"
+CONTINUITY_REASONING_TARGET_EFFORT="${CONTINUITY_REASONING_TARGET_EFFORT:-}"
 CONTINUITY_POLICY_NAME="${CONTINUITY_POLICY_NAME:-hermes_v1}"
 
 TARGET_PYTHON="$TARGET_HERMES_DIR/venv/bin/python"
@@ -35,6 +39,10 @@ export CONTINUITY_EMBEDDING_MODEL
 export CONTINUITY_EMBEDDING_BASE_URL
 export CONTINUITY_REASONING_MODEL
 export CONTINUITY_REASONING_EFFORT
+export CONTINUITY_REASONING_TARGET_NAME
+export CONTINUITY_REASONING_PROVIDER
+export CONTINUITY_REASONING_TARGET_MODEL
+export CONTINUITY_REASONING_TARGET_EFFORT
 export CONTINUITY_POLICY_NAME
 
 if [[ ! -x "$TARGET_PYTHON" ]]; then
@@ -128,6 +136,24 @@ continuity.update(
         "policyName": os.environ["CONTINUITY_POLICY_NAME"],
     }
 )
+
+target_name = os.environ.get("CONTINUITY_REASONING_TARGET_NAME", "").strip()
+target_provider = os.environ.get("CONTINUITY_REASONING_PROVIDER", "").strip()
+target_model = os.environ.get("CONTINUITY_REASONING_TARGET_MODEL", "").strip()
+target_effort = os.environ.get("CONTINUITY_REASONING_TARGET_EFFORT", "").strip()
+if any((target_name, target_provider, target_model, target_effort)):
+    reasoning_target = continuity.get("reasoningTarget")
+    if not isinstance(reasoning_target, dict):
+        reasoning_target = {}
+    continuity["reasoningTarget"] = reasoning_target
+    if target_name:
+        reasoning_target["targetName"] = target_name
+    if target_provider:
+        reasoning_target["provider"] = target_provider
+    if target_model:
+        reasoning_target["model"] = target_model
+    if target_effort:
+        reasoning_target["reasoningEffort"] = target_effort
 
 config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 

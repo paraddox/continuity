@@ -7,6 +7,7 @@ import sys
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
@@ -32,6 +33,7 @@ from continuity.reasoning import (
     validate_structured_output,
 )
 from continuity.reasoning.codex_adapter import CodexAdapter
+from continuity.reasoning.hermes_chat_adapter import HermesChatAdapter, HermesChatAdapterConfig
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,25 @@ class RecordingResponsesClient:
         if not self._responses:
             raise AssertionError("no fake responses remaining")
         return self._responses.pop(0)
+
+
+class RecordingChatCompletionsClient:
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        self._responses = list(responses)
+        self.chat = self
+        self.completions = self
+
+    def create(self, **kwargs: object) -> FakeResponse:
+        if not self._responses:
+            raise AssertionError("no fake responses remaining")
+        output_text = self._responses.pop(0).output_text
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content=output_text),
+                )
+            ]
+        )
 
 
 class FixtureBackedFakeReasoningAdapter:
@@ -214,6 +235,48 @@ class CodexAdapterContractTests(ReasoningAdapterContractMixin, unittest.TestCase
 
     def make_claim_adapter(self) -> ReasoningAdapter:
         return self._make_codex_adapter(
+            json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "claim_type": "preference",
+                            "subject_ref": "observation:0.author",
+                            "scope": "user",
+                            "locus_key": "preference/favorite_drink",
+                            "value": {"drink": "black coffee"},
+                            "evidence_refs": ["observation:0"],
+                        }
+                    ]
+                }
+            )
+        )
+
+
+class HermesChatAdapterContractTests(ReasoningAdapterContractMixin, unittest.TestCase):
+    def make_adapter(self) -> ReasoningAdapter:
+        return self.make_answer_adapter()
+
+    def _make_chat_adapter(self, output_text: str) -> ReasoningAdapter:
+        client = RecordingChatCompletionsClient([FakeResponse(output_text)])
+        return HermesChatAdapter(
+            client=client,
+            config=HermesChatAdapterConfig(model="glm-5-turbo"),
+            policy_pack=hermes_v1_policy_pack(),
+        )
+
+    def make_answer_adapter(self) -> ReasoningAdapter:
+        return self._make_chat_adapter("Alice prefers black coffee.")
+
+    def make_structured_adapter(self) -> ReasoningAdapter:
+        return self._make_chat_adapter(
+            '{"payload":{"memory_type":"preference","value":"black coffee"}}'
+        )
+
+    def make_summary_adapter(self) -> ReasoningAdapter:
+        return self._make_chat_adapter("Summary for telegram:123456: Alice prefers black coffee.")
+
+    def make_claim_adapter(self) -> ReasoningAdapter:
+        return self._make_chat_adapter(
             json.dumps(
                 {
                     "candidates": [

@@ -32,6 +32,10 @@ from .codex_adapter import (
     CodexStructuredSpec,
     prompt_policy_for,
 )
+from .hermes_chat_adapter import (
+    HermesChatAdapter,
+    HermesChatAdapterConfig,
+)
 
 __all__ = [
     "AnswerQueryRequest",
@@ -47,6 +51,8 @@ __all__ = [
     "CodexPromptPolicy",
     "CodexSDKUnavailableError",
     "CodexStructuredSpec",
+    "HermesChatAdapter",
+    "HermesChatAdapterConfig",
     "RawStructuredOutput",
     "ReasoningAdapter",
     "ReasoningMessage",

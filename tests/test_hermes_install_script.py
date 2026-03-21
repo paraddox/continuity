@@ -90,6 +90,57 @@ class HermesInstallScriptTests(unittest.TestCase):
             self.assertEqual(host["continuity"]["reasoningEffort"], "low")
             self.assertEqual(host["peerName"], "soso")
 
+    def test_script_writes_reasoning_target_fields_when_requested(self) -> None:
+        script_path = ROOT_DIR / "scripts" / "install-hermes-plugin.sh"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            hermes_dir = temp_root / "custom-hermes"
+            python_bin = hermes_dir / "venv" / "bin" / "python"
+            python_bin.parent.mkdir(parents=True)
+            python_bin.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            python_bin.chmod(
+                python_bin.stat().st_mode
+                | stat.S_IXUSR
+                | stat.S_IXGRP
+                | stat.S_IXOTH
+            )
+
+            config_path = temp_root / "config.json"
+            config_path.write_text(json.dumps({"hosts": {"hermes": {}}}), encoding="utf-8")
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "HONCHO_CONFIG_PATH": str(config_path),
+                    "SKIP_PIP_INSTALL": "1",
+                    "RESTART_GATEWAY": "0",
+                    "CONTINUITY_REASONING_TARGET_NAME": "GLM 5 Turbo",
+                    "CONTINUITY_REASONING_PROVIDER": "zai",
+                    "CONTINUITY_REASONING_TARGET_MODEL": "glm-5-turbo",
+                    "CONTINUITY_REASONING_TARGET_EFFORT": "low",
+                }
+            )
+
+            subprocess.run(
+                [str(script_path), str(hermes_dir)],
+                check=True,
+                cwd=ROOT_DIR,
+                env=env,
+            )
+
+            updated = json.loads(config_path.read_text(encoding="utf-8"))
+            target = updated["hosts"]["hermes"]["continuity"]["reasoningTarget"]
+            self.assertEqual(
+                target,
+                {
+                    "targetName": "GLM 5 Turbo",
+                    "provider": "zai",
+                    "model": "glm-5-turbo",
+                    "reasoningEffort": "low",
+                },
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

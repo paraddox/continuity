@@ -13,6 +13,7 @@ from types import ModuleType
 from unittest.mock import patch
 
 from continuity.hermes_compat.config import (
+    ContinuityReasoningTarget,
     ContinuityVectorBackendKind,
     HermesMemoryBackendKind,
     HermesMemoryConfig,
@@ -21,6 +22,7 @@ from continuity.hermes_compat.factory import _try_hermes_codex_runtime, create_c
 from continuity.hermes_compat.manager import ContinuityHermesSessionManager
 from continuity.index.zvec_index import InMemoryZvecBackend
 from continuity.reasoning.codex_adapter import CodexAdapter
+from continuity.reasoning.hermes_chat_adapter import HermesChatAdapter
 from continuity.reasoning.base import AnswerQueryRequest, ClaimDerivationRequest, RawStructuredOutput, TextResponse
 
 
@@ -90,6 +92,35 @@ class FakeReasoningAdapter:
 
 
 class HermesMemoryConfigTests(unittest.TestCase):
+    def test_reads_reasoning_target_from_host_continuity_block(self) -> None:
+        config = HermesMemoryConfig.from_mapping(
+            {
+                "hosts": {
+                    "hermes": {
+                        "backend": "continuity",
+                        "continuity": {
+                            "reasoningTarget": {
+                                "targetName": "GLM 5 Turbo",
+                                "provider": "zai",
+                                "model": "glm-5-turbo",
+                                "reasoningEffort": "low",
+                            }
+                        },
+                    }
+                }
+            }
+        )
+
+        self.assertEqual(
+            config.continuity_reasoning_target,
+            ContinuityReasoningTarget(
+                target_name="GLM 5 Turbo",
+                provider="zai",
+                model="glm-5-turbo",
+                reasoning_effort="low",
+            ),
+        )
+
     def test_host_continuity_backend_auto_enables_without_honcho_api_key(self) -> None:
         config = HermesMemoryConfig.from_mapping(
             {
@@ -192,6 +223,122 @@ class HermesMemoryConfigTests(unittest.TestCase):
         self.assertIsInstance(captured["reasoning_adapter"], CodexAdapter)
         self.assertIs(captured["reasoning_adapter"]._client, fake_client)
         self.assertEqual(captured["reasoning_adapter"].config.model, "gpt-5.3-codex")
+        self.assertIsInstance(manager, FakeManager)
+
+    def test_factory_prefers_independent_hermes_reasoning_target_when_configured(self) -> None:
+        config = HermesMemoryConfig.from_mapping(
+            {
+                "backend": "continuity",
+                "continuity": {
+                    "reasoningTarget": {
+                        "targetName": "GLM 5 Turbo",
+                    }
+                },
+            }
+        )
+        fake_adapter = FakeReasoningAdapter()
+        captured: dict[str, object] = {}
+
+        class FakeManager:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        with (
+            patch(
+                "continuity.hermes_compat.factory._resolve_hermes_reasoning_adapter",
+                return_value=fake_adapter,
+            ),
+            patch("continuity.hermes_compat.factory.ContinuityHermesSessionManager", FakeManager),
+        ):
+            manager, _ = create_continuity_backend(config)
+
+        self.assertIs(captured["reasoning_adapter"], fake_adapter)
+        self.assertIsInstance(manager, FakeManager)
+
+    def test_factory_resolves_named_hermes_custom_provider_target(self) -> None:
+        config = HermesMemoryConfig.from_mapping(
+            {
+                "backend": "continuity",
+                "continuity": {
+                    "reasoningTarget": {
+                        "targetName": "GLM 5 Turbo",
+                    }
+                },
+            }
+        )
+        captured: dict[str, object] = {}
+
+        class FakeManager:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        fake_config = ModuleType("hermes_cli.config")
+        fake_config.load_config = lambda: {
+            "custom_providers": [
+                {
+                    "name": "GLM 5 Turbo",
+                    "base_url": "https://api.z.ai/api/coding/paas/v4",
+                    "api_key": "glm-secret",
+                    "model": "glm-5-turbo",
+                }
+            ]
+        }
+
+        fake_auxiliary = ModuleType("agent.auxiliary_client")
+        fake_auxiliary.resolve_provider_client = lambda provider, **kwargs: (
+            object(),
+            kwargs.get("model") or "glm-5-turbo",
+        )
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "hermes_cli.config": fake_config,
+                    "agent.auxiliary_client": fake_auxiliary,
+                },
+            ),
+            patch("continuity.hermes_compat.factory.ContinuityHermesSessionManager", FakeManager),
+        ):
+            manager, _ = create_continuity_backend(config)
+
+        self.assertIsInstance(captured["reasoning_adapter"], HermesChatAdapter)
+        self.assertEqual(captured["reasoning_adapter"].config.model, "glm-5-turbo")
+        self.assertIsInstance(manager, FakeManager)
+
+    def test_factory_resolves_explicit_provider_and_model_target(self) -> None:
+        config = HermesMemoryConfig.from_mapping(
+            {
+                "backend": "continuity",
+                "continuity": {
+                    "reasoningTarget": {
+                        "provider": "zai",
+                        "model": "glm-5-turbo",
+                        "reasoningEffort": "low",
+                    }
+                },
+            }
+        )
+        captured: dict[str, object] = {}
+
+        class FakeManager:
+            def __init__(self, **kwargs: object) -> None:
+                captured.update(kwargs)
+
+        fake_auxiliary = ModuleType("agent.auxiliary_client")
+        fake_auxiliary.resolve_provider_client = lambda provider, **kwargs: (
+            object(),
+            kwargs.get("model") or "glm-5-turbo",
+        )
+
+        with (
+            patch.dict(sys.modules, {"agent.auxiliary_client": fake_auxiliary}),
+            patch("continuity.hermes_compat.factory.ContinuityHermesSessionManager", FakeManager),
+        ):
+            manager, _ = create_continuity_backend(config)
+
+        self.assertIsInstance(captured["reasoning_adapter"], HermesChatAdapter)
+        self.assertEqual(captured["reasoning_adapter"].config.model, "glm-5-turbo")
         self.assertIsInstance(manager, FakeManager)
 
     def test_factory_returns_none_for_non_continuity_backend(self) -> None:

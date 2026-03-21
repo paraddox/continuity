@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
+from typing import Any
 
 from continuity.embeddings.ollama import OllamaEmbeddingClient, OllamaEmbeddingConfig
 from continuity.hermes_compat.config import (
@@ -14,6 +16,7 @@ from continuity.hermes_compat.manager import ContinuityHermesSessionManager
 from continuity.index.zvec_index import InMemoryZvecBackend, ZvecBackend
 from continuity.reasoning.base import ReasoningAdapter
 from continuity.reasoning.codex_adapter import CodexAdapter, CodexAdapterConfig, ResponsesClient
+from continuity.reasoning.hermes_chat_adapter import HermesChatAdapter, HermesChatAdapterConfig
 
 
 class _HermesCodexResponsesClient:
@@ -99,6 +102,110 @@ def _try_hermes_codex_runtime() -> tuple[ResponsesClient | None, str | None]:
     return client, model
 
 
+def _resolve_hermes_reasoning_adapter(
+    config: HermesMemoryConfig,
+) -> ReasoningAdapter | None:
+    target = config.continuity_reasoning_target
+    if not target.is_configured:
+        return None
+
+    hermes_config = _load_hermes_config()
+    provider = target.provider
+    model = target.model
+    base_url: str | None = None
+    api_key: str | None = None
+
+    if target.target_name:
+        named_target = _find_named_custom_provider(target.target_name, hermes_config)
+        if named_target is not None:
+            base_url = _clean_optional_text(named_target.get("base_url"))
+            api_key = _clean_optional_text(named_target.get("api_key"))
+            provider = provider or "custom"
+            model = model or _clean_optional_text(named_target.get("model"))
+        else:
+            provider = provider or target.target_name
+
+    resolved_provider = _clean_optional_text(provider)
+    resolved_model = _clean_optional_text(model)
+    resolved_effort = target.reasoning_effort or config.continuity_reasoning_effort
+
+    if not resolved_provider:
+        raise ValueError(
+            "Continuity reasoning target requires either a named Hermes target or an explicit provider"
+        )
+    if not resolved_model:
+        raise ValueError(
+            "Continuity reasoning target requires a model, either explicitly or from the named Hermes target"
+        )
+
+    if resolved_provider == "openai-codex":
+        codex_client, _ = _try_hermes_codex_runtime()
+        return CodexAdapter(
+            client=codex_client,
+            config=CodexAdapterConfig(
+                model=resolved_model,
+                reasoning_effort=resolved_effort,  # type: ignore[arg-type]
+            ),
+        )
+
+    auxiliary_module = importlib.import_module("agent.auxiliary_client")
+    client, final_model = auxiliary_module.resolve_provider_client(
+        resolved_provider,
+        model=resolved_model,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+    )
+    if client is None or not final_model:
+        raise RuntimeError(
+            f"Unable to resolve Hermes reasoning target provider={resolved_provider!r} model={resolved_model!r}"
+        )
+
+    return HermesChatAdapter(
+        client=client,
+        config=HermesChatAdapterConfig(
+            model=final_model,
+            reasoning_effort=resolved_effort,
+        ),
+    )
+
+
+def _clean_optional_text(value: object) -> str | None:
+    cleaned = str(value or "").strip()
+    return cleaned or None
+
+
+def _load_hermes_config() -> Mapping[str, object]:
+    config_module = importlib.import_module("hermes_cli.config")
+    config = config_module.load_config()
+    if isinstance(config, Mapping):
+        return config
+    return {}
+
+
+def _normalized_target_name(value: str) -> str:
+    return value.strip().lower().replace(" ", "-")
+
+
+def _find_named_custom_provider(
+    target_name: str,
+    config: Mapping[str, object],
+) -> Mapping[str, object] | None:
+    requested = _normalized_target_name(target_name.removeprefix("custom:"))
+    providers = config.get("custom_providers")
+    if not isinstance(providers, list):
+        return None
+
+    for entry in providers:
+        if not isinstance(entry, Mapping):
+            continue
+        entry_name = _clean_optional_text(entry.get("name"))
+        if not entry_name:
+            continue
+        if _normalized_target_name(entry_name) == requested:
+            return entry
+    return None
+
+
 def create_continuity_backend(
     config: HermesMemoryConfig | None = None,
     *,
@@ -110,14 +217,16 @@ def create_continuity_backend(
     if not resolved_config.enabled:
         return None, resolved_config
 
-    codex_client, hermes_model = _try_hermes_codex_runtime()
-    adapter = reasoning_adapter or CodexAdapter(
-        client=codex_client,
-        config=CodexAdapterConfig(
-            model=hermes_model or resolved_config.continuity_reasoning_model,
-            reasoning_effort=resolved_config.continuity_reasoning_effort,  # type: ignore[arg-type]
+    adapter = reasoning_adapter or _resolve_hermes_reasoning_adapter(resolved_config)
+    if adapter is None:
+        codex_client, hermes_model = _try_hermes_codex_runtime()
+        adapter = CodexAdapter(
+            client=codex_client,
+            config=CodexAdapterConfig(
+                model=hermes_model or resolved_config.continuity_reasoning_model,
+                reasoning_effort=resolved_config.continuity_reasoning_effort,  # type: ignore[arg-type]
+            )
         )
-    )
     embedding_client = OllamaEmbeddingClient(
         config=OllamaEmbeddingConfig(
             model=resolved_config.continuity_embedding_model,
